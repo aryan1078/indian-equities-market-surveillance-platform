@@ -1,0 +1,261 @@
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: market-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  cassandra:
+    image: cassandra:5.0
+    container_name: market-cassandra
+    environment:
+      MAX_HEAP_SIZE: 768M
+      HEAP_NEWSIZE: 256M
+      CASSANDRA_CLUSTER_NAME: MarketSurveillanceCluster
+      CASSANDRA_DC: dc1
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' localhost 9042 >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+
+  cassandra-init:
+    image: cassandra:5.0
+    container_name: market-cassandra-init
+    volumes:
+      - ./infra/cassandra/schema.cql:/schema.cql:ro
+    command: ["sh", "-c", "until cqlsh cassandra 9042 -f /schema.cql; do echo waiting for cassandra; sleep 5; done"]
+    depends_on:
+      cassandra:
+        condition: service_healthy
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: market-redis
+    volumes:
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: market-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-market_surveillance}
+      POSTGRES_USER: ${POSTGRES_USER:-market_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-market_pass}
+    volumes:
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-market_user} -d ${POSTGRES_DB:-market_surveillance}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres-migrate:
+    image: postgres:17-alpine
+    container_name: market-postgres-migrate
+    env_file:
+      - .env
+    volumes:
+      - ./infra/postgres/runtime-migrations.sql:/migrations.sql:ro
+    command:
+      [
+        "sh",
+        "-c",
+        "until pg_isready -h postgres -U ${POSTGRES_USER:-market_user} -d ${POSTGRES_DB:-market_surveillance}; do echo waiting for postgres; sleep 2; done && psql postgresql://${POSTGRES_USER:-market_user}:${POSTGRES_PASSWORD:-market_pass}@postgres:5432/${POSTGRES_DB:-market_surveillance} -f /migrations.sql",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: ./infra/docker/python-service.Dockerfile
+    container_name: market-api
+    env_file:
+      - .env
+    environment:
+      SERVICE_MODULE: api_service.main
+      SERVICE_PORT: 8000
+      API_BASE_URL: http://api:8000
+    command: ["python", "-m", "api_service.main"]
+    volumes:
+      - ./:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+
+  storage-consumer:
+    build:
+      context: .
+      dockerfile: ./infra/docker/python-service.Dockerfile
+    container_name: market-storage-consumer
+    env_file:
+      - .env
+    command: ["python", "-m", "storage_consumer.main"]
+    volumes:
+      - ./:/app
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+
+  anomaly-engine:
+    build:
+      context: .
+      dockerfile: ./infra/docker/python-service.Dockerfile
+    container_name: market-anomaly-engine
+    env_file:
+      - .env
+    command: ["python", "-m", "anomaly_engine.main"]
+    volumes:
+      - ./:/app
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+
+  contagion-engine:
+    build:
+      context: .
+      dockerfile: ./infra/docker/python-service.Dockerfile
+    container_name: market-contagion-engine
+    env_file:
+      - .env
+    command: ["python", "-m", "contagion_engine.main"]
+    volumes:
+      - ./:/app
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: .
+      dockerfile: ./infra/docker/frontend.Dockerfile
+    container_name: market-frontend
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    command: ["start-frontend-dev.sh"]
+    volumes:
+      - ./frontend:/app/frontend
+      - /app/frontend/node_modules
+    working_dir: /app/frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+
+  collector:
+    build:
+      context: .
+      dockerfile: ./infra/docker/python-service.Dockerfile
+    container_name: market-collector
+    env_file:
+      - .env
+    command: ["python", "-m", "collector.main", "replay", "--fixture", "tests/fixtures/replay_ticks.jsonl", "--speed", "30"]
+    volumes:
+      - ./:/app
+    profiles: ["tooling"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+
+  collector-live:
+    build:
+      context: .
+      dockerfile: ./infra/docker/python-service.Dockerfile
+    container_name: market-collector-live
+    env_file:
+      - .env
+    command: ["python", "-m", "collector.main", "live", "--poll-seconds", "60"]
+    volumes:
+      - ./:/app
+    profiles: ["live"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+
+  etl:
+    build:
+      context: .
+      dockerfile: ./infra/docker/python-service.Dockerfile
+    container_name: market-etl
+    env_file:
+      - .env
+    command: ["python", "-m", "etl_service.main", "run", "--trading-date", "${DEFAULT_TRADING_DATE:-2026-03-16}"]
+    volumes:
+      - ./:/app
+    profiles: ["tooling"]
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully

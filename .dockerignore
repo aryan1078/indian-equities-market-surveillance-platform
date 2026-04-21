@@ -1,0 +1,15 @@
+.git
+.venv
+.deps
+node_modules
+frontend/node_modules
+__pycache__
+.pytest_cache
+.next
+data
+datasets
+tmp
+logs
+coverage
+dist
+build
