@@ -295,6 +295,21 @@ input {
   border-radius: 16px;
 }
 
+.searchResultsHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.65rem 0.8rem 0.45rem;
+  border-bottom: 1px solid rgba(155, 177, 201, 0.08);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.searchResultsHeader small {
+  color: var(--muted);
+}
+
 .searchResult,
 .iconAction,
 .linkButton,
@@ -424,6 +439,34 @@ td {
   flex-wrap: wrap;
 }
 
+.filterPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.filterPill {
+  padding: 0.5rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted-strong);
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.filterPill:hover {
+  transform: translateY(-1px);
+  border-color: rgba(109, 210, 255, 0.2);
+  background: rgba(109, 210, 255, 0.08);
+}
+
+.filterPill.active {
+  color: var(--ink);
+  border-color: rgba(72, 201, 176, 0.28);
+  background: linear-gradient(180deg, rgba(72, 201, 176, 0.12), rgba(109, 210, 255, 0.08));
+}
+
 .toolbarGroup.grow {
   flex: 1 1 280px;
 }
@@ -490,6 +533,11 @@ td {
   gap: 0.75rem;
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.resultSummary {
+  color: var(--muted-strong);
+  font-size: 0.88rem;
 }
 
 .alertRow,
@@ -588,7 +636,8 @@ td {
 .statsGrid,
 .contentGrid,
 .cardGrid,
-.keyValueGrid {
+.keyValueGrid,
+.quickActionsGrid {
   display: grid;
   gap: 0.9rem;
   min-width: 0;
@@ -605,6 +654,10 @@ td {
 
 .contentGrid.twoUp {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.quickActionsGrid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .cardGrid.compact {
@@ -732,6 +785,43 @@ td {
 
 .tableLink:hover {
   text-decoration: underline;
+}
+
+.shortcutCard {
+  min-width: 0;
+  padding: 1rem 1.05rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, rgba(15, 23, 34, 0.94), rgba(9, 14, 22, 0.92));
+  box-shadow: var(--shadow);
+  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+
+.shortcutCard:hover {
+  transform: translateY(-2px);
+  border-color: rgba(72, 201, 176, 0.28);
+  background: linear-gradient(180deg, rgba(17, 28, 40, 0.98), rgba(10, 17, 26, 0.96));
+}
+
+.shortcutTitle {
+  margin: 0;
+  font-size: 1.08rem;
+  line-height: 1.1;
+}
+
+.shortcutMetric {
+  margin-top: 0.6rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+}
+
+.shortcutHint {
+  margin-top: 0.3rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
 }
 
 .metricRow,
@@ -1272,6 +1362,7 @@ td {
 
   .contentGrid.twoUp,
   .statsGrid,
+  .quickActionsGrid,
   .cardGrid.compact,
   .keyValueGrid,
   .chartSummaryRow {

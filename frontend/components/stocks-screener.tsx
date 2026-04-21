@@ -10,6 +10,8 @@ type StocksScreenerProps = {
   items: ScreenerItem[];
 };
 
+const DEFAULT_LIMIT = "25";
+
 function severityClass(value: string | null | undefined) {
   const severity = severityLabel(value);
   if (severity === "critical") {
@@ -33,6 +35,7 @@ export function StocksScreener({ items }: StocksScreenerProps) {
   const [sector, setSector] = useState("all");
   const [status, setStatus] = useState("all");
   const [sort, setSort] = useState("priority");
+  const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
 
   const sectors = useMemo(() => {
@@ -104,6 +107,67 @@ export function StocksScreener({ items }: StocksScreenerProps) {
     return next;
   }, [deferredQuery, items, sector, sort, status]);
 
+  const visible = useMemo(() => {
+    if (limit === "all") {
+      return filtered;
+    }
+    const parsed = Number(limit);
+    return filtered.slice(0, Number.isFinite(parsed) ? parsed : 25);
+  }, [filtered, limit]);
+
+  const openCount = filtered.filter((item) => item.latest_alert?.status === "open").length;
+  const anomalousCount = filtered.filter((item) => item.latest_anomaly?.is_anomalous).length;
+  const hasFilters = Boolean(query.trim()) || sector !== "all" || status !== "all" || sort !== "priority" || limit !== DEFAULT_LIMIT;
+  const activeSummary = [
+    deferredQuery ? `matching "${query.trim()}"` : "across hydrated names",
+    sector !== "all" ? sector : `${sectors.length || 0} sectors`,
+    status === "open"
+      ? "open alerts only"
+      : status === "anomalous"
+        ? "live anomalies only"
+        : status === "active"
+          ? "active signals only"
+          : status === "quiet"
+            ? "quiet names only"
+            : "all states",
+    sort === "return"
+      ? "sorted by 20D return"
+      : sort === "rsi"
+        ? "sorted by RSI"
+        : sort === "volume"
+          ? "sorted by volume ratio"
+          : sort === "name"
+            ? "sorted alphabetically"
+            : "priority sorted",
+    limit === "all" ? "full list" : `top ${limit}`,
+  ].join(" | ");
+
+  function resetFilters() {
+    setQuery("");
+    setSector("all");
+    setStatus("all");
+    setSort("priority");
+    setLimit(DEFAULT_LIMIT);
+  }
+
+  function applyPreset(preset: "priority" | "open" | "anomalous" | "quiet" | "return") {
+    setQuery("");
+    setSector("all");
+    setLimit(DEFAULT_LIMIT);
+    if (preset === "priority") {
+      setStatus("all");
+      setSort("priority");
+      return;
+    }
+    if (preset === "return") {
+      setStatus("all");
+      setSort("return");
+      return;
+    }
+    setStatus(preset);
+    setSort(preset === "quiet" ? "name" : "priority");
+  }
+
   return (
     <div className="stackList">
       <div className="toolbarRow">
@@ -139,17 +203,69 @@ export function StocksScreener({ items }: StocksScreenerProps) {
             <option value="volume">Volume ratio</option>
             <option value="name">Alphabetical</option>
           </select>
+          <select className="toolbarSelect" value={limit} onChange={(event) => setLimit(event.target.value)}>
+            <option value="25">Top 25</option>
+            <option value="50">Top 50</option>
+            <option value="100">Top 100</option>
+            <option value="all">All rows</option>
+          </select>
+          <button type="button" className="actionButton" onClick={resetFilters} disabled={!hasFilters}>
+            Reset
+          </button>
         </div>
       </div>
 
-      <div className="resultMeta">
-        <span>{filtered.length} visible</span>
-        <span>{items.length} tracked</span>
+      <div className="filterPills">
+        <button
+          type="button"
+          className={`filterPill ${status === "all" && sort === "priority" && !query.trim() && sector === "all" ? "active" : ""}`}
+          onClick={() => applyPreset("priority")}
+        >
+          Priority view
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${status === "open" ? "active" : ""}`}
+          onClick={() => applyPreset("open")}
+        >
+          Open alerts
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${status === "anomalous" ? "active" : ""}`}
+          onClick={() => applyPreset("anomalous")}
+        >
+          Live anomalies
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${status === "quiet" ? "active" : ""}`}
+          onClick={() => applyPreset("quiet")}
+        >
+          Quiet names
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${status === "all" && sort === "return" ? "active" : ""}`}
+          onClick={() => applyPreset("return")}
+        >
+          Top 20D return
+        </button>
       </div>
 
-      {filtered.length ? (
-        <div className="tableWrap">
-          <table className="dataTable">
+      <div className="resultMeta">
+        <span>{visible.length} shown</span>
+        <span>{filtered.length} matched</span>
+        <span>{items.length} tracked</span>
+        <span>{openCount} open alerts</span>
+        <span>{anomalousCount} live anomalies</span>
+      </div>
+
+      <div className="resultSummary">{activeSummary}</div>
+
+      {visible.length ? (
+        <div className="tableWrap tableWrapScrollY">
+          <table className="dataTable stickyHeaderTable">
             <thead>
               <tr>
                 <th>Symbol</th>
@@ -164,7 +280,7 @@ export function StocksScreener({ items }: StocksScreenerProps) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item) => (
+              {visible.map((item) => (
                 <tr key={item.symbol}>
                   <td>
                     <Link href={`/stocks/${encodeURIComponent(item.symbol)}`} className="tableLink">

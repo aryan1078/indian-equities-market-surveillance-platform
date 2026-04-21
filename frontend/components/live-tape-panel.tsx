@@ -11,6 +11,8 @@ type LiveTapePanelProps = {
   referenceStocks: StockReference[];
 };
 
+const DEFAULT_LIMIT = "25";
+
 function numeric(value: number | null | undefined, fallback = -9999) {
   return value === null || value === undefined || Number.isNaN(value) ? fallback : value;
 }
@@ -20,6 +22,7 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
   const [sector, setSector] = useState("all");
   const [status, setStatus] = useState("all");
   const [sort, setSort] = useState("priority");
+  const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
 
   const referenceMap = useMemo(
@@ -77,9 +80,50 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
     return next;
   }, [deferredQuery, items, referenceMap, sector, sort, status]);
 
+  const visible = useMemo(() => {
+    if (limit === "all") {
+      return filtered;
+    }
+    const parsed = Number(limit);
+    return filtered.slice(0, Number.isFinite(parsed) ? parsed : 25);
+  }, [filtered, limit]);
+
   const flaggedVisible = filtered.filter((item) => item.is_anomalous).length;
   const latestTradingDate = filtered[0]?.trading_date ?? items[0]?.trading_date;
   const strongestSymbol = filtered[0]?.symbol ?? "N/A";
+  const hasFilters = Boolean(query.trim()) || sector !== "all" || status !== "all" || sort !== "priority" || limit !== DEFAULT_LIMIT;
+  const activeSummary = [
+    deferredQuery ? `matching "${query.trim()}"` : "across the live universe",
+    sector !== "all" ? sector : `${sectors.length || 0} sectors`,
+    status === "flagged" ? "flagged only" : status === "normal" ? "normal only" : "all states",
+    sort === "score" ? "sorted by score" : sort === "volume" ? "sorted by volume" : sort === "symbol" ? "sorted alphabetically" : "priority sorted",
+    limit === "all" ? "full list" : `top ${limit}`,
+  ].join(" | ");
+
+  function resetFilters() {
+    setQuery("");
+    setSector("all");
+    setStatus("all");
+    setSort("priority");
+    setLimit(DEFAULT_LIMIT);
+  }
+
+  function applyPreset(preset: "all" | "flagged" | "score" | "volume") {
+    if (preset === "all") {
+      resetFilters();
+      return;
+    }
+    setQuery("");
+    setSector("all");
+    setLimit(DEFAULT_LIMIT);
+    if (preset === "flagged") {
+      setStatus("flagged");
+      setSort("score");
+      return;
+    }
+    setStatus("all");
+    setSort(preset === "score" ? "score" : "volume");
+  }
 
   return (
     <div className="stackList">
@@ -113,54 +157,101 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
             <option value="volume">Volume</option>
             <option value="symbol">Alphabetical</option>
           </select>
+          <select className="toolbarSelect" value={limit} onChange={(event) => setLimit(event.target.value)}>
+            <option value="25">Top 25</option>
+            <option value="50">Top 50</option>
+            <option value="100">Top 100</option>
+            <option value="all">All rows</option>
+          </select>
+          <button type="button" className="actionButton" onClick={resetFilters} disabled={!hasFilters}>
+            Reset
+          </button>
         </div>
       </div>
 
+      <div className="filterPills">
+        <button
+          type="button"
+          className={`filterPill ${!hasFilters ? "active" : ""}`}
+          onClick={() => applyPreset("all")}
+        >
+          Live default
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${status === "flagged" ? "active" : ""}`}
+          onClick={() => applyPreset("flagged")}
+        >
+          Flagged only
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${status === "all" && sort === "score" ? "active" : ""}`}
+          onClick={() => applyPreset("score")}
+        >
+          Highest score
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${status === "all" && sort === "volume" ? "active" : ""}`}
+          onClick={() => applyPreset("volume")}
+        >
+          Highest volume
+        </button>
+      </div>
+
       <div className="resultMeta">
-        <span>{filtered.length} visible</span>
+        <span>{visible.length} shown</span>
+        <span>{filtered.length} matched</span>
         <span>{flaggedVisible} flagged</span>
         <span>{latestTradingDate ? formatDate(latestTradingDate) : "No trading date"}</span>
         <span>Lead symbol {strongestSymbol}</span>
       </div>
 
-      <div className="tableWrap tableWrapScrollY">
-        <table className="dataTable stickyHeaderTable liveTapeTable">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Company</th>
-              <th>Sector</th>
-              <th>Last</th>
-              <th>Score</th>
-              <th>Status</th>
-              <th>Volume</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((item) => (
-              <tr key={`${item.symbol}-${item.timestamp_ist}`} className={item.is_anomalous ? "dataRowAlert" : undefined}>
-                <td>
-                  <Link href={`/stocks/${encodeURIComponent(item.symbol)}`} className="tableLink">
-                    {item.symbol}
-                  </Link>
-                </td>
-                <td>{referenceMap.get(item.symbol)?.company_name ?? item.symbol}</td>
-                <td>{item.sector}</td>
-                <td>{formatNumber(item.close)}</td>
-                <td>{formatNumber(item.composite_score, 3)}</td>
-                <td>
-                  <span className={`severityTag ${item.is_anomalous ? "critical" : "low"}`}>
-                    {item.is_anomalous ? "flagged" : "normal"}
-                  </span>
-                </td>
-                <td>{formatCompactIndian(item.volume, 1)}</td>
-                <td>{formatTime(item.timestamp_ist)}</td>
+      <div className="resultSummary">{activeSummary}</div>
+
+      {visible.length ? (
+        <div className="tableWrap tableWrapScrollY">
+          <table className="dataTable stickyHeaderTable liveTapeTable">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Company</th>
+                <th>Sector</th>
+                <th>Last</th>
+                <th>Score</th>
+                <th>Status</th>
+                <th>Volume</th>
+                <th>Time</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {visible.map((item) => (
+                <tr key={`${item.symbol}-${item.timestamp_ist}`} className={item.is_anomalous ? "dataRowAlert" : undefined}>
+                  <td>
+                    <Link href={`/stocks/${encodeURIComponent(item.symbol)}`} className="tableLink">
+                      {item.symbol}
+                    </Link>
+                  </td>
+                  <td>{referenceMap.get(item.symbol)?.company_name ?? item.symbol}</td>
+                  <td>{item.sector}</td>
+                  <td>{formatNumber(item.close)}</td>
+                  <td>{formatNumber(item.composite_score, 3)}</td>
+                  <td>
+                    <span className={`severityTag ${item.is_anomalous ? "critical" : "low"}`}>
+                      {item.is_anomalous ? "flagged" : "normal"}
+                    </span>
+                  </td>
+                  <td>{formatCompactIndian(item.volume, 1)}</td>
+                  <td>{formatTime(item.timestamp_ist)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="emptyState">No live rows match the current tape filters.</div>
+      )}
     </div>
   );
 }

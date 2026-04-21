@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { apiUrl, type StockReference } from "../lib/api";
@@ -11,6 +11,7 @@ type SearchResponse = {
 
 export function StockSearch() {
   const router = useRouter();
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<StockReference[]>([]);
   const [open, setOpen] = useState(false);
@@ -49,6 +50,27 @@ export function StockSearch() {
     };
   }, [endpoint, trimmed]);
 
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!shellRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, []);
+
   function navigate(symbol: string) {
     setOpen(false);
     setQuery("");
@@ -67,7 +89,7 @@ export function StockSearch() {
   }
 
   return (
-    <div className="searchShell">
+    <div className="searchShell" ref={shellRef}>
       <form className="searchBar" onSubmit={onSubmit}>
         <input
           value={query}
@@ -79,6 +101,10 @@ export function StockSearch() {
       </form>
       {open && (trimmed.length >= 2 || results.length > 0) ? (
         <div className="searchResults">
+          <div className="searchResultsHeader">
+            <span>{results.length ? `${results.length} matches` : "Direct workspace open"}</span>
+            <small>{trimmed ? `Enter ${trimmed.toUpperCase()}` : "Type a symbol or company"}</small>
+          </div>
           {results.length ? (
             results.slice(0, 8).map((item) => (
               <button key={item.symbol} type="button" className="searchResult" onClick={() => navigate(item.symbol)}>
@@ -92,7 +118,7 @@ export function StockSearch() {
               </button>
             ))
           ) : (
-            <div className="searchEmpty">Press Enter to open {trimmed.toUpperCase()}</div>
+            <div className="searchEmpty">Press Enter to open {trimmed.toUpperCase()} directly.</div>
           )}
         </div>
       ) : null}

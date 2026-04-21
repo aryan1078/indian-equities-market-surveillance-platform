@@ -65,6 +65,36 @@ export default async function OverviewPage() {
       }));
   const liveFlaggedCount = liveMarket.filter((item) => item.is_anomalous).length;
   const topSector = sectorCards[0];
+  const shortcuts = [
+    {
+      href: "/stocks",
+      eyebrow: "Monitor",
+      title: "Stock workspace",
+      metric: `${liveFlaggedCount} live flagged`,
+      hint: `${screenerItems.length} hydrated names ready for drill-down`,
+    },
+    {
+      href: "/contagion",
+      eyebrow: "Investigate",
+      title: "Contagion explorer",
+      metric: `${contagion.length} recent events`,
+      hint: topSector ? `${topSector.sector} is leading current pressure` : "No active contagion cluster",
+    },
+    {
+      href: "/warehouse",
+      eyebrow: "Analyze",
+      title: "Warehouse analytics",
+      metric: `${movers.length} movers highlighted`,
+      hint: "Cross-session rollups and sector regime views",
+    },
+    {
+      href: "/replay",
+      eyebrow: "Operate",
+      title: "Replay control",
+      metric: overview?.market_mode ?? "idle",
+      hint: overview?.as_of ? `Latest minute ${formatDateTime(overview.as_of)}` : "Ready for deterministic replay",
+    },
+  ];
 
   return (
     <>
@@ -115,6 +145,17 @@ export default async function OverviewPage() {
             tone="critical"
           />
         </div>
+      </section>
+
+      <section className="contentGrid quickActionsGrid">
+        {shortcuts.map((shortcut) => (
+          <Link key={shortcut.href} href={shortcut.href} className="shortcutCard">
+            <p className="panelEyebrow">{shortcut.eyebrow}</p>
+            <h3 className="shortcutTitle">{shortcut.title}</h3>
+            <div className="shortcutMetric">{shortcut.metric}</div>
+            <div className="shortcutHint">{shortcut.hint}</div>
+          </Link>
+        ))}
       </section>
 
       <section className="contentGrid twoUp">

@@ -122,6 +122,27 @@ export function UniverseDirectory({
     () => sectorOptions.filter((option) => option.known && option.sector !== "Unknown"),
     [sectorOptions],
   );
+  const hasFilters = Boolean(query.trim()) || filter !== "all" || sectorState !== "all" || Boolean(sector);
+  const activeSummary = [
+    query.trim() ? `matching "${query.trim()}"` : "across the listed NSE directory",
+    filter === "watchlist"
+      ? "watchlist only"
+      : filter === "hydrated"
+        ? "hydrated only"
+        : filter === "unhydrated"
+          ? "needs hydration"
+          : "all listing states",
+    sectorState === "known" ? "classified sectors only" : sectorState === "unknown" ? "unknown sector only" : "all sector states",
+    sector ? `sector ${sector}` : "all sector buckets",
+  ].join(" | ");
+
+  function resetFilters() {
+    setQuery("");
+    setFilter("all");
+    setSectorState("all");
+    setSector("");
+    setPage(0);
+  }
 
   return (
     <div className="stackList">
@@ -164,7 +185,51 @@ export function UniverseDirectory({
               </option>
             ))}
           </select>
+          <button type="button" className="actionButton" onClick={resetFilters} disabled={!hasFilters}>
+            Reset
+          </button>
         </div>
+      </div>
+
+      <div className="filterPills">
+        <button
+          type="button"
+          className={`filterPill ${filter === "all" && sectorState === "all" && !query.trim() && !sector ? "active" : ""}`}
+          onClick={resetFilters}
+        >
+          All listed
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${filter === "watchlist" ? "active" : ""}`}
+          onClick={() => setFilter("watchlist")}
+        >
+          Watchlist
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${filter === "hydrated" ? "active" : ""}`}
+          onClick={() => setFilter("hydrated")}
+        >
+          Hydrated
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${filter === "unhydrated" ? "active" : ""}`}
+          onClick={() => setFilter("unhydrated")}
+        >
+          Needs hydration
+        </button>
+        <button
+          type="button"
+          className={`filterPill ${sectorState === "unknown" ? "active" : ""}`}
+          onClick={() => {
+            setSector("");
+            setSectorState("unknown");
+          }}
+        >
+          Unknown sectors
+        </button>
       </div>
 
       <div className="resultMeta">
@@ -179,9 +244,11 @@ export function UniverseDirectory({
         {loading ? <span>Refreshing...</span> : null}
       </div>
 
+      <div className="resultSummary">{activeSummary}</div>
+
       {rows.length ? (
-        <div className="tableWrap">
-          <table className="dataTable">
+        <div className="tableWrap tableWrapScrollY">
+          <table className="dataTable stickyHeaderTable">
             <thead>
               <tr>
                 <th>Symbol</th>
@@ -232,6 +299,14 @@ export function UniverseDirectory({
             type="button"
             className="actionButton"
             disabled={page <= 0 || loading}
+            onClick={() => setPage(0)}
+          >
+            First
+          </button>
+          <button
+            type="button"
+            className="actionButton"
+            disabled={page <= 0 || loading}
             onClick={() => setPage((current) => Math.max(current - 1, 0))}
           >
             Previous
@@ -243,6 +318,14 @@ export function UniverseDirectory({
             onClick={() => setPage((current) => current + 1)}
           >
             Next
+          </button>
+          <button
+            type="button"
+            className="actionButton"
+            disabled={page + 1 >= totalPages || loading}
+            onClick={() => setPage(Math.max(totalPages - 1, 0))}
+          >
+            Last
           </button>
         </div>
       </div>
