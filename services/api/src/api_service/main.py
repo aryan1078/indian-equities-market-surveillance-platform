@@ -447,6 +447,9 @@ def _system_scale_snapshot(
         sector_monthly_count = int(conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_monthly_summary").fetchone()["row_count"])
         sector_regime_count = _relation_row_count(conn, "warehouse.mv_sector_regime_summary")
         stock_leader_count = _relation_row_count(conn, "warehouse.mv_stock_signal_leaders")
+        sector_momentum_count = _relation_row_count(conn, "warehouse.mv_sector_momentum_summary")
+        stock_persistence_count = _relation_row_count(conn, "warehouse.mv_stock_persistence_summary")
+        intraday_profile_count = _relation_row_count(conn, "warehouse.mv_intraday_pressure_profile")
         coverage_window = conn.execute(
             """
             SELECT COUNT(DISTINCT trading_date) AS trading_days_loaded,
@@ -513,6 +516,9 @@ def _system_scale_snapshot(
         "mv_sector_monthly_summary": sector_monthly_count,
         "mv_sector_regime_summary": sector_regime_count,
         "mv_stock_signal_leaders": stock_leader_count,
+        "mv_sector_momentum_summary": sector_momentum_count,
+        "mv_stock_persistence_summary": stock_persistence_count,
+        "mv_intraday_pressure_profile": intraday_profile_count,
     }
     operational_total_rows = sum(operational_counts.values())
     warehouse_total_rows = sum(warehouse_counts.values())
@@ -1268,7 +1274,10 @@ def warehouse_summary() -> dict[str, Any]:
                 date_window.last_calendar_date,
                 (SELECT COUNT(*) FROM warehouse.fact_anomaly_minute) AS anomaly_minute_rows,
                 (SELECT COUNT(*) FROM warehouse.fact_contagion_event) AS contagion_event_rows,
-                (SELECT COUNT(*) FROM warehouse.fact_surveillance_coverage) AS coverage_rows
+                (SELECT COUNT(*) FROM warehouse.fact_surveillance_coverage) AS coverage_rows,
+                (SELECT COUNT(*) FROM warehouse.mv_sector_momentum_summary) AS sector_momentum_rows,
+                (SELECT COUNT(*) FROM warehouse.mv_stock_persistence_summary) AS stock_persistence_rows,
+                (SELECT COUNT(*) FROM warehouse.mv_intraday_pressure_profile) AS intraday_profile_rows
             FROM market_window
             CROSS JOIN date_window
             """
@@ -1362,6 +1371,90 @@ def warehouse_stock_leaders(limit: int = Query(50, ge=1, le=200)) -> list[dict[s
                 latest_peak_score
             FROM warehouse.mv_stock_signal_leaders
             ORDER BY peak_daily_composite_score DESC, total_anomalies DESC, symbol
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/warehouse/sector-momentum")
+def warehouse_sector_momentum(limit: int = Query(25, ge=1, le=100)) -> list[dict[str, Any]]:
+    with pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                sector_name,
+                recent_sessions,
+                prior_sessions,
+                recent_total_anomalies,
+                prior_total_anomalies,
+                recent_avg_daily_composite_score,
+                prior_avg_daily_composite_score,
+                recent_peak_daily_composite_score,
+                prior_peak_daily_composite_score,
+                recent_contagion_event_count,
+                prior_contagion_event_count,
+                anomaly_delta,
+                score_delta,
+                contagion_delta
+            FROM warehouse.mv_sector_momentum_summary
+            ORDER BY anomaly_delta DESC, score_delta DESC, sector_name
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/warehouse/stock-persistence")
+def warehouse_stock_persistence(limit: int = Query(50, ge=1, le=200)) -> list[dict[str, Any]]:
+    with pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                symbol,
+                company_name,
+                sector_name,
+                sessions_covered,
+                anomaly_days,
+                total_anomalies,
+                avg_daily_composite_score,
+                peak_daily_composite_score,
+                contagion_event_count,
+                last_anomaly_date,
+                recent_5_session_anomalies,
+                recent_5_session_anomaly_days,
+                anomaly_day_ratio,
+                avg_anomalies_per_active_day,
+                days_since_last_anomaly
+            FROM warehouse.mv_stock_persistence_summary
+            ORDER BY anomaly_day_ratio DESC, total_anomalies DESC, symbol
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/warehouse/intraday-profile")
+def warehouse_intraday_profile(limit: int = Query(375, ge=1, le=400)) -> list[dict[str, Any]]:
+    with pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                time_sk,
+                time_label,
+                hour,
+                minute,
+                anomaly_minutes,
+                distinct_stocks,
+                sessions_covered,
+                avg_composite_score,
+                peak_composite_score,
+                contagion_minutes
+            FROM warehouse.mv_intraday_pressure_profile
+            ORDER BY time_sk ASC
             LIMIT %s
             """,
             (limit,),

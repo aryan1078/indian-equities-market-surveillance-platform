@@ -277,6 +277,9 @@ export type WarehouseSummary = {
   anomaly_minute_rows: number;
   contagion_event_rows: number;
   coverage_rows: number;
+  sector_momentum_rows?: number;
+  stock_persistence_rows?: number;
+  intraday_profile_rows?: number;
 };
 
 export type WarehouseMonthlyRollup = {
@@ -327,6 +330,54 @@ export type WarehouseStockLeader = {
   latest_calendar_date: string;
   latest_anomaly_count: number;
   latest_peak_score: number;
+};
+
+export type WarehouseSectorMomentum = {
+  sector_name: string;
+  recent_sessions: number;
+  prior_sessions: number;
+  recent_total_anomalies: number;
+  prior_total_anomalies: number;
+  recent_avg_daily_composite_score: number;
+  prior_avg_daily_composite_score: number;
+  recent_peak_daily_composite_score: number;
+  prior_peak_daily_composite_score: number;
+  recent_contagion_event_count: number;
+  prior_contagion_event_count: number;
+  anomaly_delta: number;
+  score_delta: number;
+  contagion_delta: number;
+};
+
+export type WarehouseStockPersistence = {
+  symbol: string;
+  company_name: string;
+  sector_name: string;
+  sessions_covered: number;
+  anomaly_days: number;
+  total_anomalies: number;
+  avg_daily_composite_score: number;
+  peak_daily_composite_score: number;
+  contagion_event_count: number;
+  last_anomaly_date?: string | null;
+  recent_5_session_anomalies: number;
+  recent_5_session_anomaly_days: number;
+  anomaly_day_ratio: number;
+  avg_anomalies_per_active_day: number;
+  days_since_last_anomaly?: number | null;
+};
+
+export type WarehouseIntradayProfilePoint = {
+  time_sk: number;
+  time_label: string;
+  hour: number;
+  minute: number;
+  anomaly_minutes: number;
+  distinct_stocks: number;
+  sessions_covered: number;
+  avg_composite_score: number;
+  peak_composite_score: number;
+  contagion_minutes: number;
 };
 
 export type SystemHealthResponse = {
@@ -496,6 +547,18 @@ export async function fetchWarehouseStockOutliers() {
 
 export async function fetchWarehouseStockLeaders(limit = 50) {
   return getJson<WarehouseStockLeader[]>(`/api/warehouse/stock-leaders?limit=${limit}`);
+}
+
+export async function fetchWarehouseSectorMomentum(limit = 25) {
+  return getJson<WarehouseSectorMomentum[]>(`/api/warehouse/sector-momentum?limit=${limit}`);
+}
+
+export async function fetchWarehouseStockPersistence(limit = 50) {
+  return getJson<WarehouseStockPersistence[]>(`/api/warehouse/stock-persistence?limit=${limit}`);
+}
+
+export async function fetchWarehouseIntradayProfile(limit = 375) {
+  return getJson<WarehouseIntradayProfilePoint[]>(`/api/warehouse/intraday-profile?limit=${limit}`);
 }
 
 export async function fetchSystemHealth() {

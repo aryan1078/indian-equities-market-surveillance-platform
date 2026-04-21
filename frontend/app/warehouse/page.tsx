@@ -1,30 +1,65 @@
+import { LineChart } from "../../components/line-chart";
 import { StatCard } from "../../components/stat-card";
 import {
+  fetchWarehouseIntradayProfile,
   fetchWarehouseMonthly,
   fetchWarehouseRollups,
+  fetchWarehouseSectorMomentum,
   fetchWarehouseSectorRegimes,
   fetchWarehouseStockLeaders,
   fetchWarehouseStockOutliers,
+  fetchWarehouseStockPersistence,
   fetchWarehouseSummary,
 } from "../../lib/api";
 import { formatCompactIndian, formatDate, formatNumber } from "../../lib/format";
 
 export default async function WarehousePage() {
-  const [summary, daily, monthly, outliers, sectorRegimes, stockLeaders] = await Promise.all([
+  const [
+    summary,
+    daily,
+    monthly,
+    outliers,
+    sectorRegimes,
+    stockLeaders,
+    sectorMomentum,
+    stockPersistence,
+    intradayProfile,
+  ] = await Promise.all([
     fetchWarehouseSummary(),
     fetchWarehouseRollups(),
     fetchWarehouseMonthly(),
     fetchWarehouseStockOutliers(),
     fetchWarehouseSectorRegimes(20),
     fetchWarehouseStockLeaders(30),
+    fetchWarehouseSectorMomentum(18),
+    fetchWarehouseStockPersistence(20),
+    fetchWarehouseIntradayProfile(375),
   ]);
+
   const dailyRows = daily ?? [];
   const monthlyRows = monthly ?? [];
   const outlierRows = outliers ?? [];
   const regimeRows = sectorRegimes ?? [];
   const leaderRows = stockLeaders ?? [];
+  const momentumRows = sectorMomentum ?? [];
+  const persistenceRows = stockPersistence ?? [];
+  const intradayRows = intradayProfile ?? [];
   const latestDate = summary?.last_calendar_date ?? dailyRows[0]?.calendar_date ?? null;
   const hottestSector = [...dailyRows].sort((left, right) => right.max_composite_score - left.max_composite_score)[0];
+  const momentumLeader = [...momentumRows].sort(
+    (left, right) => right.anomaly_delta - left.anomaly_delta || right.score_delta - left.score_delta,
+  )[0];
+  const persistenceLeader = [...persistenceRows].sort(
+    (left, right) => right.anomaly_day_ratio - left.anomaly_day_ratio || right.total_anomalies - left.total_anomalies,
+  )[0];
+  const intradayLabels = intradayRows.map((row) => row.time_label);
+  const intradayValues = intradayRows.map((row) => row.avg_composite_score);
+  const hotspotRows = [...intradayRows]
+    .sort(
+      (left, right) =>
+        right.peak_composite_score - left.peak_composite_score || right.contagion_minutes - left.contagion_minutes,
+    )
+    .slice(0, 12);
 
   return (
     <>
@@ -69,6 +104,21 @@ export default async function WarehousePage() {
             tone="critical"
           />
           <StatCard
+            label="Momentum sectors"
+            value={String(summary?.sector_momentum_rows ?? momentumRows.length)}
+            hint={momentumLeader ? `${momentumLeader.sector_name} leads with ${momentumLeader.anomaly_delta} anomaly delta` : "Recent-vs-prior regime scan"}
+          />
+          <StatCard
+            label="Persistent names"
+            value={String(summary?.stock_persistence_rows ?? persistenceRows.length)}
+            hint={
+              persistenceLeader
+                ? `${persistenceLeader.symbol} active on ${formatNumber(persistenceLeader.anomaly_day_ratio * 100, 1)}% of sessions`
+                : "Cross-session persistence profile"
+            }
+            tone="warning"
+          />
+          <StatCard
             label="Total anomalies"
             value={formatCompactIndian(summary?.total_anomalies, 2)}
             hint={
@@ -81,6 +131,110 @@ export default async function WarehousePage() {
       </section>
 
       <section className="contentGrid twoUp">
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Intraday pressure</p>
+              <h3 className="panelTitle">Warehouse session profile</h3>
+            </div>
+            <span className="panelMeta">{intradayRows.length} minute buckets</span>
+          </div>
+          {intradayRows.length ? (
+            <LineChart
+              values={intradayValues}
+              labels={intradayLabels}
+              color="var(--accent)"
+              height={220}
+              valueDigits={3}
+              seriesLabel="Average warehouse composite score"
+            />
+          ) : (
+            <div className="emptyState">Intraday warehouse profile will appear after ETL refresh.</div>
+          )}
+        </article>
+
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Regime shifts</p>
+              <h3 className="panelTitle">Recent versus prior window</h3>
+            </div>
+            <span className="panelMeta">{momentumRows.length} sectors</span>
+          </div>
+          {momentumRows.length ? (
+            <div className="tableWrap">
+              <table className="dataTable">
+                <thead>
+                  <tr>
+                    <th>Sector</th>
+                    <th>Recent</th>
+                    <th>Prior</th>
+                    <th>Delta</th>
+                    <th>Score delta</th>
+                    <th>Contagion delta</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {momentumRows.map((row) => (
+                    <tr key={row.sector_name}>
+                      <td>{row.sector_name}</td>
+                      <td>{String(row.recent_total_anomalies)}</td>
+                      <td>{String(row.prior_total_anomalies)}</td>
+                      <td>{formatNumber(row.anomaly_delta, 0)}</td>
+                      <td>{formatNumber(row.score_delta, 3)}</td>
+                      <td>{formatNumber(row.contagion_delta, 0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="emptyState">Momentum windows require several loaded trading sessions.</div>
+          )}
+        </article>
+      </section>
+
+      <section className="contentGrid twoUp">
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Persistent leaders</p>
+              <h3 className="panelTitle">Cross-session signal durability</h3>
+            </div>
+            <span className="panelMeta">{persistenceRows.length} stocks</span>
+          </div>
+          {persistenceRows.length ? (
+            <div className="tableWrap">
+              <table className="dataTable">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Sector</th>
+                    <th>Active days</th>
+                    <th>Ratio</th>
+                    <th>Recent 5D</th>
+                    <th>Days since</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {persistenceRows.map((row) => (
+                    <tr key={row.symbol}>
+                      <td>{row.symbol}</td>
+                      <td>{row.sector_name}</td>
+                      <td>{String(row.anomaly_days)}</td>
+                      <td>{formatNumber(row.anomaly_day_ratio * 100, 1)}%</td>
+                      <td>{String(row.recent_5_session_anomalies)}</td>
+                      <td>{row.days_since_last_anomaly ?? "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="emptyState">Persistence profiles will appear after warehouse refresh.</div>
+          )}
+        </article>
+
         <article className="surface">
           <div className="panelHeader">
             <div>
@@ -122,50 +276,6 @@ export default async function WarehousePage() {
             </div>
           ) : (
             <div className="emptyState">Sector regime rollups will appear after ETL refresh.</div>
-          )}
-        </article>
-
-        <article className="surface">
-          <div className="panelHeader">
-            <div>
-              <p className="panelEyebrow">Stock leaders</p>
-              <h3 className="panelTitle">Warehouse stock leaderboard</h3>
-            </div>
-            <span className="panelMeta">{leaderRows.length} stocks</span>
-          </div>
-          {leaderRows.length ? (
-            <div className="tableWrap">
-              <table className="dataTable">
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Company</th>
-                    <th>Sector</th>
-                    <th>Anomaly days</th>
-                    <th>Total anomalies</th>
-                    <th>Latest peak</th>
-                    <th>Peak score</th>
-                    <th>Contagion</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {leaderRows.map((row) => (
-                    <tr key={row.symbol}>
-                      <td>{row.symbol}</td>
-                      <td>{row.company_name}</td>
-                      <td>{row.sector_name}</td>
-                      <td>{String(row.anomaly_days)}</td>
-                      <td>{String(row.total_anomalies)}</td>
-                      <td>{formatNumber(row.latest_peak_score, 3)}</td>
-                      <td>{formatNumber(row.peak_daily_composite_score, 3)}</td>
-                      <td>{String(row.contagion_event_count)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="emptyState">Stock leader rollups will appear after ETL refresh.</div>
           )}
         </article>
       </section>
@@ -214,6 +324,46 @@ export default async function WarehousePage() {
         <article className="surface">
           <div className="panelHeader">
             <div>
+              <p className="panelEyebrow">Session hotspots</p>
+              <h3 className="panelTitle">Intraday peak buckets</h3>
+            </div>
+            <span className="panelMeta">{hotspotRows.length} rows</span>
+          </div>
+          {hotspotRows.length ? (
+            <div className="tableWrap">
+              <table className="dataTable">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Avg score</th>
+                    <th>Peak score</th>
+                    <th>Stocks</th>
+                    <th>Contagion min</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hotspotRows.map((row) => (
+                    <tr key={row.time_label}>
+                      <td>{row.time_label}</td>
+                      <td>{formatNumber(row.avg_composite_score, 3)}</td>
+                      <td>{formatNumber(row.peak_composite_score, 3)}</td>
+                      <td>{String(row.distinct_stocks)}</td>
+                      <td>{String(row.contagion_minutes)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="emptyState">Intraday hotspot ranking will appear after ETL refresh.</div>
+          )}
+        </article>
+      </section>
+
+      <section className="contentGrid twoUp">
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
               <p className="panelEyebrow">Monthly summary</p>
               <h3 className="panelTitle">Sector rollups</h3>
             </div>
@@ -250,6 +400,50 @@ export default async function WarehousePage() {
             </div>
           ) : (
             <div className="emptyState">Monthly rollups will appear after warehouse refresh.</div>
+          )}
+        </article>
+
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Stock leaders</p>
+              <h3 className="panelTitle">Warehouse stock leaderboard</h3>
+            </div>
+            <span className="panelMeta">{leaderRows.length} stocks</span>
+          </div>
+          {leaderRows.length ? (
+            <div className="tableWrap">
+              <table className="dataTable">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Company</th>
+                    <th>Sector</th>
+                    <th>Anomaly days</th>
+                    <th>Total anomalies</th>
+                    <th>Latest peak</th>
+                    <th>Peak score</th>
+                    <th>Contagion</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leaderRows.map((row) => (
+                    <tr key={row.symbol}>
+                      <td>{row.symbol}</td>
+                      <td>{row.company_name}</td>
+                      <td>{row.sector_name}</td>
+                      <td>{String(row.anomaly_days)}</td>
+                      <td>{String(row.total_anomalies)}</td>
+                      <td>{formatNumber(row.latest_peak_score, 3)}</td>
+                      <td>{formatNumber(row.peak_daily_composite_score, 3)}</td>
+                      <td>{String(row.contagion_event_count)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="emptyState">Stock leader rollups will appear after ETL refresh.</div>
           )}
         </article>
       </section>

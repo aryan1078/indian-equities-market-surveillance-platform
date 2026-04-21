@@ -475,11 +475,203 @@ def rebuild_materialized_views(conn) -> int:
             latest_snapshot.latest_peak_score
         """
     )
+    conn.execute("DROP MATERIALIZED VIEW IF EXISTS warehouse.mv_sector_momentum_summary")
+    conn.execute(
+        """
+        CREATE MATERIALIZED VIEW warehouse.mv_sector_momentum_summary AS
+        WITH ranked_dates AS (
+            SELECT
+                calendar_date,
+                ROW_NUMBER() OVER (ORDER BY calendar_date DESC) AS recency_rank
+            FROM (
+                SELECT DISTINCT d.calendar_date
+                FROM warehouse.fact_market_day f
+                JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+            ) dates
+        ),
+        windowed AS (
+            SELECT
+                sec.sector_name,
+                CASE
+                    WHEN rd.recency_rank BETWEEN 1 AND 5 THEN 'recent'
+                    WHEN rd.recency_rank BETWEEN 6 AND 10 THEN 'prior'
+                    ELSE NULL
+                END AS window_name,
+                COUNT(DISTINCT d.calendar_date) AS sessions_covered,
+                COALESCE(SUM(f.anomaly_count), 0) AS total_anomalies,
+                AVG(f.avg_composite_score) AS avg_daily_composite_score,
+                MAX(f.max_composite_score) AS peak_daily_composite_score,
+                COALESCE(SUM(f.contagion_event_count), 0) AS contagion_event_count
+            FROM warehouse.fact_market_day f
+            JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+            JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+            JOIN ranked_dates rd ON rd.calendar_date = d.calendar_date
+            WHERE rd.recency_rank <= 10
+            GROUP BY
+                sec.sector_name,
+                CASE
+                    WHEN rd.recency_rank BETWEEN 1 AND 5 THEN 'recent'
+                    WHEN rd.recency_rank BETWEEN 6 AND 10 THEN 'prior'
+                    ELSE NULL
+                END
+        )
+        SELECT
+            sector_name,
+            COALESCE(MAX(CASE WHEN window_name = 'recent' THEN sessions_covered END), 0) AS recent_sessions,
+            COALESCE(MAX(CASE WHEN window_name = 'prior' THEN sessions_covered END), 0) AS prior_sessions,
+            COALESCE(MAX(CASE WHEN window_name = 'recent' THEN total_anomalies END), 0) AS recent_total_anomalies,
+            COALESCE(MAX(CASE WHEN window_name = 'prior' THEN total_anomalies END), 0) AS prior_total_anomalies,
+            COALESCE(MAX(CASE WHEN window_name = 'recent' THEN avg_daily_composite_score END), 0) AS recent_avg_daily_composite_score,
+            COALESCE(MAX(CASE WHEN window_name = 'prior' THEN avg_daily_composite_score END), 0) AS prior_avg_daily_composite_score,
+            COALESCE(MAX(CASE WHEN window_name = 'recent' THEN peak_daily_composite_score END), 0) AS recent_peak_daily_composite_score,
+            COALESCE(MAX(CASE WHEN window_name = 'prior' THEN peak_daily_composite_score END), 0) AS prior_peak_daily_composite_score,
+            COALESCE(MAX(CASE WHEN window_name = 'recent' THEN contagion_event_count END), 0) AS recent_contagion_event_count,
+            COALESCE(MAX(CASE WHEN window_name = 'prior' THEN contagion_event_count END), 0) AS prior_contagion_event_count,
+            COALESCE(MAX(CASE WHEN window_name = 'recent' THEN total_anomalies END), 0)
+                - COALESCE(MAX(CASE WHEN window_name = 'prior' THEN total_anomalies END), 0) AS anomaly_delta,
+            COALESCE(MAX(CASE WHEN window_name = 'recent' THEN avg_daily_composite_score END), 0)
+                - COALESCE(MAX(CASE WHEN window_name = 'prior' THEN avg_daily_composite_score END), 0) AS score_delta,
+            COALESCE(MAX(CASE WHEN window_name = 'recent' THEN contagion_event_count END), 0)
+                - COALESCE(MAX(CASE WHEN window_name = 'prior' THEN contagion_event_count END), 0) AS contagion_delta
+        FROM windowed
+        GROUP BY sector_name
+        """
+    )
+    conn.execute("DROP MATERIALIZED VIEW IF EXISTS warehouse.mv_stock_persistence_summary")
+    conn.execute(
+        """
+        CREATE MATERIALIZED VIEW warehouse.mv_stock_persistence_summary AS
+        WITH ranked_dates AS (
+            SELECT
+                calendar_date,
+                ROW_NUMBER() OVER (ORDER BY calendar_date DESC) AS recency_rank
+            FROM (
+                SELECT DISTINCT d.calendar_date
+                FROM warehouse.fact_market_day f
+                JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+            ) dates
+        ),
+        current_stock AS (
+            SELECT DISTINCT ON (symbol)
+                symbol,
+                company_name,
+                sector_name
+            FROM warehouse.dim_stock
+            WHERE is_current = true
+            ORDER BY symbol, valid_from DESC
+        ),
+        latest_window AS (
+            SELECT MAX(calendar_date) AS latest_calendar_date
+            FROM ranked_dates
+        ),
+        daily_facts AS (
+            SELECT
+                ds.symbol,
+                cs.company_name,
+                cs.sector_name,
+                d.calendar_date,
+                f.anomaly_count,
+                f.avg_composite_score,
+                f.max_composite_score,
+                f.contagion_event_count
+            FROM warehouse.fact_market_day f
+            JOIN warehouse.dim_stock ds ON ds.stock_sk = f.stock_sk
+            JOIN current_stock cs ON cs.symbol = ds.symbol
+            JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+        ),
+        recent_activity AS (
+            SELECT
+                df.symbol,
+                COALESCE(SUM(df.anomaly_count) FILTER (WHERE rd.recency_rank <= 5), 0) AS recent_5_session_anomalies,
+                COUNT(*) FILTER (WHERE rd.recency_rank <= 5 AND df.anomaly_count > 0) AS recent_5_session_anomaly_days
+            FROM daily_facts df
+            JOIN ranked_dates rd ON rd.calendar_date = df.calendar_date
+            GROUP BY df.symbol
+        )
+        SELECT
+            df.symbol,
+            MAX(df.company_name) AS company_name,
+            MAX(df.sector_name) AS sector_name,
+            COUNT(*) AS sessions_covered,
+            COUNT(*) FILTER (WHERE df.anomaly_count > 0) AS anomaly_days,
+            COALESCE(SUM(df.anomaly_count), 0) AS total_anomalies,
+            AVG(df.avg_composite_score) AS avg_daily_composite_score,
+            MAX(df.max_composite_score) AS peak_daily_composite_score,
+            COALESCE(SUM(df.contagion_event_count), 0) AS contagion_event_count,
+            MAX(df.calendar_date) FILTER (WHERE df.anomaly_count > 0) AS last_anomaly_date,
+            COALESCE(ra.recent_5_session_anomalies, 0) AS recent_5_session_anomalies,
+            COALESCE(ra.recent_5_session_anomaly_days, 0) AS recent_5_session_anomaly_days,
+            CASE
+                WHEN COUNT(*) = 0 THEN 0
+                ELSE (COUNT(*) FILTER (WHERE df.anomaly_count > 0))::double precision / COUNT(*)
+            END AS anomaly_day_ratio,
+            CASE
+                WHEN COUNT(*) FILTER (WHERE df.anomaly_count > 0) = 0 THEN 0
+                ELSE COALESCE(SUM(df.anomaly_count), 0)::double precision / COUNT(*) FILTER (WHERE df.anomaly_count > 0)
+            END AS avg_anomalies_per_active_day,
+            CASE
+                WHEN MAX(df.calendar_date) FILTER (WHERE df.anomaly_count > 0) IS NULL THEN NULL
+                ELSE (lw.latest_calendar_date - MAX(df.calendar_date) FILTER (WHERE df.anomaly_count > 0))
+            END AS days_since_last_anomaly
+        FROM daily_facts df
+        JOIN latest_window lw ON true
+        LEFT JOIN recent_activity ra ON ra.symbol = df.symbol
+        GROUP BY
+            df.symbol,
+            ra.recent_5_session_anomalies,
+            ra.recent_5_session_anomaly_days,
+            lw.latest_calendar_date
+        """
+    )
+    conn.execute("DROP MATERIALIZED VIEW IF EXISTS warehouse.mv_intraday_pressure_profile")
+    conn.execute(
+        """
+        CREATE MATERIALIZED VIEW warehouse.mv_intraday_pressure_profile AS
+        WITH corrected_dates AS (
+            SELECT date_sk
+            FROM warehouse.fact_anomaly_minute
+            GROUP BY date_sk
+            HAVING MIN(time_sk) >= 560
+        )
+        SELECT
+            dt.time_sk,
+            dt.label AS time_label,
+            dt.hour,
+            dt.minute,
+            COUNT(*) AS anomaly_minutes,
+            COUNT(DISTINCT f.stock_sk) AS distinct_stocks,
+            COUNT(DISTINCT f.date_sk) AS sessions_covered,
+            AVG(f.composite_score) AS avg_composite_score,
+            MAX(f.composite_score) AS peak_composite_score,
+            SUM(CASE WHEN f.contagion_flag THEN 1 ELSE 0 END) AS contagion_minutes
+        FROM warehouse.fact_anomaly_minute f
+        JOIN warehouse.dim_time dt ON dt.time_sk = f.time_sk
+        JOIN corrected_dates cd ON cd.date_sk = f.date_sk
+        GROUP BY dt.time_sk, dt.label, dt.hour, dt.minute
+        """
+    )
     daily_rows = conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_daily_summary").fetchone()["row_count"]
     monthly_rows = conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_monthly_summary").fetchone()["row_count"]
     sector_regime_rows = conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_regime_summary").fetchone()["row_count"]
     stock_leader_rows = conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_stock_signal_leaders").fetchone()["row_count"]
-    return daily_rows + monthly_rows + sector_regime_rows + stock_leader_rows
+    sector_momentum_rows = conn.execute(
+        "SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_momentum_summary"
+    ).fetchone()["row_count"]
+    stock_persistence_rows = conn.execute(
+        "SELECT COUNT(*) AS row_count FROM warehouse.mv_stock_persistence_summary"
+    ).fetchone()["row_count"]
+    intraday_profile_rows = conn.execute(
+        "SELECT COUNT(*) AS row_count FROM warehouse.mv_intraday_pressure_profile"
+    ).fetchone()["row_count"]
+    return (
+        daily_rows
+        + monthly_rows
+        + sector_regime_rows
+        + stock_leader_rows
+        + sector_momentum_rows
+        + stock_persistence_rows
+        + intraday_profile_rows
+    )
 
 
 def purge_facts_for_date(conn, trading_date: date) -> None:
@@ -516,7 +708,10 @@ def load_facts(run_id: str, trading_date: date, rebuild_views: bool = True) -> t
             FROM staging.anomaly_metrics_stage s
             JOIN warehouse.dim_stock ds ON ds.symbol = s.symbol AND ds.is_current = true
             JOIN warehouse.dim_date dd ON dd.calendar_date = s.trading_date
-            JOIN warehouse.dim_time dt ON dt.minute_of_day = EXTRACT(HOUR FROM s.timestamp_ist) * 60 + EXTRACT(MINUTE FROM s.timestamp_ist)
+            JOIN warehouse.dim_time dt
+              ON dt.minute_of_day =
+                    EXTRACT(HOUR FROM s.timestamp_ist AT TIME ZONE 'Asia/Kolkata') * 60
+                  + EXTRACT(MINUTE FROM s.timestamp_ist AT TIME ZONE 'Asia/Kolkata')
             JOIN warehouse.dim_sector sec ON sec.sector_name = s.sector
             JOIN warehouse.dim_exchange ex ON ex.exchange_code = s.exchange
             WHERE s.run_id = %s
@@ -612,7 +807,10 @@ def load_facts(run_id: str, trading_date: date, rebuild_views: bool = True) -> t
             FROM operational.surveillance_coverage sc
             JOIN warehouse.dim_stock ds ON ds.symbol = sc.symbol AND ds.is_current = true
             JOIN warehouse.dim_date dd ON dd.calendar_date = sc.trading_date
-            JOIN warehouse.dim_time dt ON dt.minute_of_day = EXTRACT(HOUR FROM sc.timestamp_ist) * 60 + EXTRACT(MINUTE FROM sc.timestamp_ist)
+            JOIN warehouse.dim_time dt
+              ON dt.minute_of_day =
+                    EXTRACT(HOUR FROM sc.timestamp_ist AT TIME ZONE 'Asia/Kolkata') * 60
+                  + EXTRACT(MINUTE FROM sc.timestamp_ist AT TIME ZONE 'Asia/Kolkata')
             WHERE sc.trading_date = %s
             ON CONFLICT (stock_sk, date_sk, time_sk) DO UPDATE
             SET coverage_state = EXCLUDED.coverage_state,
