@@ -16,7 +16,12 @@ export default async function SystemPage() {
   const etlRuns = Array.isArray(runs?.etl_runs) ? runs.etl_runs : [];
   const listedCount = health?.universe_inventory?.listed_symbols ?? health?.database_inventory?.stock_profiles ?? 0;
   const hydratedCount = health?.universe_inventory?.hydrated_symbols ?? 0;
+  const knownSectorCount = health?.universe_inventory?.known_sector_symbols ?? 0;
+  const unknownSectorCount = health?.universe_inventory?.unknown_sector_symbols ?? 0;
+  const sectorCoveragePct = health?.universe_inventory?.sector_coverage_pct ?? 0;
   const coveragePct = listedCount ? `${Math.round((hydratedCount / listedCount) * 100)}%` : "0%";
+  const inflightTicks = Number(scale?.actual.streaming.inflight_market_ticks ?? 0);
+  const inflightAnomalies = Number(scale?.actual.streaming.inflight_anomaly_metrics ?? 0);
   const storeFootprint = scale
     ? [
         {
@@ -34,7 +39,10 @@ export default async function SystemPage() {
         {
           label: "Cassandra stream",
           value: scale.actual.streaming_total_rows,
-          detail: `${scale.actual.streaming.market_ticks ?? 0} ticks | ${scale.actual.streaming.anomaly_metrics ?? 0} anomaly points`,
+          detail:
+            inflightTicks || inflightAnomalies
+              ? `${scale.actual.streaming.market_ticks ?? 0} ticks | ${scale.actual.streaming.anomaly_metrics ?? 0} anomaly points | ${inflightTicks + inflightAnomalies} inflight`
+              : `${scale.actual.streaming.market_ticks ?? 0} ticks | ${scale.actual.streaming.anomaly_metrics ?? 0} anomaly points`,
           tone: "critical" as const,
         },
         {
@@ -85,6 +93,7 @@ export default async function SystemPage() {
           <div className="pageMetaGroup">
             <span className="metaTag">{health?.api ?? "offline"}</span>
             <span className="metaTag">{health?.redis ? "redis online" : "redis offline"}</span>
+            <span className="metaTag">{sectorCoveragePct}% sector coverage</span>
           </div>
         </div>
         <div className="statsGrid">
@@ -110,6 +119,18 @@ export default async function SystemPage() {
             label="Hydrated"
             value={String(hydratedCount)}
             hint={`${health?.database_inventory?.daily_bars ?? 0} daily bars | ${coveragePct} coverage`}
+          />
+          <StatCard
+            label="Sector coverage"
+            value={`${sectorCoveragePct}%`}
+            hint={`${knownSectorCount} classified | ${unknownSectorCount} unresolved`}
+            tone="accent"
+          />
+          <StatCard
+            label="In-flight load"
+            value={formatCompactIndian(inflightTicks + inflightAnomalies, 2)}
+            hint={inflightTicks + inflightAnomalies ? `${formatCompactIndian(inflightTicks, 2)} ticks | ${formatCompactIndian(inflightAnomalies, 2)} anomalies` : "No active bulk load"}
+            tone={inflightTicks + inflightAnomalies ? "warning" : "default"}
           />
           <StatCard
             label="Webhook"

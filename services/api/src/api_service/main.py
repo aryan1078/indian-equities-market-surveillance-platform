@@ -195,6 +195,21 @@ def _search_rank(query: str, record: dict[str, Any]) -> int:
     return 0
 
 
+def _known_sector_count(records: list[dict[str, Any]]) -> int:
+    return len([record for record in records if valid_peer_sector(record.get("sector"))])
+
+
+def _sector_options(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = defaultdict(int)
+    for record in records:
+        sector = str(record.get("sector") or "").strip() if valid_peer_sector(record.get("sector")) else "Unknown"
+        counts[sector] += 1
+    return [
+        {"sector": sector, "count": count, "known": sector != "Unknown"}
+        for sector, count in sorted(counts.items(), key=lambda item: (item[0] == "Unknown", item[0]))
+    ]
+
+
 def _load_latest_market_map() -> dict[str, dict[str, Any]]:
     profiles = _profiles()
     session = get_cassandra_session()
@@ -771,6 +786,8 @@ def system_health() -> dict[str, Any]:
         timestamps = [str(item.get("timestamp_ist")) for item in latest_market.values() if item.get("timestamp_ist")]
         if timestamps:
             last_tick = max(timestamps)
+    known_sector_symbols = _known_sector_count(list(profiles.values()))
+    unknown_sector_symbols = max(len(profiles) - known_sector_symbols, 0)
     return {
         "api": "ok",
         "redis": redis.ping(),
@@ -786,7 +803,9 @@ def system_health() -> dict[str, Any]:
             "listed_symbols": len(profiles),
             "watchlist_symbols": len([item for item in profiles.values() if item.get("watchlist")]),
             "hydrated_symbols": len(history_map),
-            "known_sector_symbols": len([item for item in profiles.values() if str(item.get("sector") or "").lower() != "unknown"]),
+            "known_sector_symbols": known_sector_symbols,
+            "unknown_sector_symbols": unknown_sector_symbols,
+            "sector_coverage_pct": round((known_sector_symbols / len(profiles)) * 100, 2) if profiles else 0.0,
         },
         "notifications": {
             "webhook_enabled": bool(settings.alert_webhook_url),
@@ -859,11 +878,14 @@ def reference_stocks(
     offset: int = Query(0, ge=0),
     watchlist_only: bool = Query(False),
     history_state: str = Query("all"),
+    sector: str | None = Query(None),
+    sector_state: str = Query("all"),
 ) -> dict[str, Any]:
     profiles = list(_profiles().values())
     history_map = _history_coverage_map()
     total_count = len(profiles)
     query = q.strip().upper() if q else ""
+    sector_filter = sector.strip() if sector else ""
     if query:
         filtered = []
         for record in profiles:
@@ -878,6 +900,14 @@ def reference_stocks(
 
     if watchlist_only:
         rows = [item for item in rows if item.get("watchlist")]
+
+    if sector_state == "known":
+        rows = [item for item in rows if valid_peer_sector(item.get("sector"))]
+    elif sector_state == "unknown":
+        rows = [item for item in rows if not valid_peer_sector(item.get("sector"))]
+
+    if sector_filter:
+        rows = [item for item in rows if str(item.get("sector") or "").casefold() == sector_filter.casefold()]
 
     enriched = []
     for item in rows:
@@ -896,6 +926,9 @@ def reference_stocks(
     elif history_state == "unhydrated":
         enriched = [item for item in enriched if not item["has_history"]]
 
+    known_sector_count = _known_sector_count(enriched)
+    unknown_sector_count = max(len(enriched) - known_sector_count, 0)
+    sector_options = _sector_options(enriched)
     page = enriched[offset : offset + limit]
     return {
         "stocks": page,
@@ -903,6 +936,9 @@ def reference_stocks(
         "filtered_count": len(enriched),
         "symbol_count": len(page),
         "sector_count": len({stock["sector"] for stock in enriched if stock.get("sector")}),
+        "sector_options": sector_options,
+        "known_sector_count": known_sector_count,
+        "unknown_sector_count": unknown_sector_count,
         "watchlist_count": len([stock for stock in profiles if stock.get("watchlist")]),
         "hydrated_count": len(history_map),
     }

@@ -43,6 +43,25 @@ export type StockReference = {
   metadata?: Record<string, unknown>;
 };
 
+export type SectorOption = {
+  sector: string;
+  count: number;
+  known: boolean;
+};
+
+export type ReferenceStocksResponse = {
+  stocks: StockReference[];
+  total_count: number;
+  filtered_count: number;
+  symbol_count: number;
+  sector_count: number;
+  sector_options: SectorOption[];
+  known_sector_count: number;
+  unknown_sector_count: number;
+  watchlist_count: number;
+  hydrated_count: number;
+};
+
 export type LatestMarket = {
   symbol: string;
   sector: string;
@@ -293,6 +312,8 @@ export type SystemHealthResponse = {
     watchlist_symbols: number;
     hydrated_symbols: number;
     known_sector_symbols: number;
+    unknown_sector_symbols?: number;
+    sector_coverage_pct?: number;
   };
   notifications?: {
     webhook_enabled: boolean;
@@ -369,6 +390,8 @@ export async function fetchReferenceStocks(params?: {
   offset?: number;
   watchlistOnly?: boolean;
   historyState?: "all" | "hydrated" | "unhydrated";
+  sectorState?: "all" | "known" | "unknown";
+  sector?: string;
 }) {
   const search = new URLSearchParams();
   if (params?.q) {
@@ -386,16 +409,14 @@ export async function fetchReferenceStocks(params?: {
   if (params?.historyState && params.historyState !== "all") {
     search.set("history_state", params.historyState);
   }
+  if (params?.sectorState && params.sectorState !== "all") {
+    search.set("sector_state", params.sectorState);
+  }
+  if (params?.sector) {
+    search.set("sector", params.sector);
+  }
   const suffix = search.toString() ? `?${search.toString()}` : "";
-  return getJson<{
-    stocks: StockReference[];
-    total_count: number;
-    filtered_count: number;
-    symbol_count: number;
-    sector_count: number;
-    watchlist_count: number;
-    hydrated_count: number;
-  }>(`/api/reference/stocks${suffix}`);
+  return getJson<ReferenceStocksResponse>(`/api/reference/stocks${suffix}`);
 }
 
 export async function fetchScreener(days = DEFAULT_STOCK_HISTORY_DAYS, limit = 100) {

@@ -3,18 +3,8 @@
 import Link from "next/link";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
-import { apiUrl, type StockReference } from "../lib/api";
+import { apiUrl, type ReferenceStocksResponse, type SectorOption, type StockReference } from "../lib/api";
 import { formatDate } from "../lib/format";
-
-type UniverseResponse = {
-  stocks: StockReference[];
-  total_count: number;
-  filtered_count: number;
-  symbol_count: number;
-  sector_count: number;
-  watchlist_count: number;
-  hydrated_count: number;
-};
 
 type UniverseDirectoryProps = {
   initialStocks: StockReference[];
@@ -22,11 +12,14 @@ type UniverseDirectoryProps = {
   initialFilteredCount: number;
   watchlistCount: number;
   hydratedCount: number;
+  initialKnownSectorCount: number;
+  initialUnknownSectorCount: number;
+  initialSectorOptions: SectorOption[];
 };
 
 const PAGE_SIZE = 100;
 
-function buildPath(query: string, filter: string, page: number) {
+function buildPath(query: string, filter: string, sectorState: string, sector: string, page: number) {
   const params = new URLSearchParams({
     limit: String(PAGE_SIZE),
     offset: String(page * PAGE_SIZE),
@@ -43,6 +36,12 @@ function buildPath(query: string, filter: string, page: number) {
   if (filter === "unhydrated") {
     params.set("history_state", "unhydrated");
   }
+  if (sectorState !== "all") {
+    params.set("sector_state", sectorState);
+  }
+  if (sector) {
+    params.set("sector", sector);
+  }
   return apiUrl(`/api/reference/stocks?${params.toString()}`);
 }
 
@@ -52,18 +51,32 @@ export function UniverseDirectory({
   initialFilteredCount,
   watchlistCount,
   hydratedCount,
+  initialKnownSectorCount,
+  initialUnknownSectorCount,
+  initialSectorOptions,
 }: UniverseDirectoryProps) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [sectorState, setSectorState] = useState("all");
+  const [sector, setSector] = useState("");
   const [page, setPage] = useState(0);
   const [rows, setRows] = useState<StockReference[]>(initialStocks);
   const [filteredCount, setFilteredCount] = useState(initialFilteredCount);
+  const [knownSectorCount, setKnownSectorCount] = useState(initialKnownSectorCount);
+  const [unknownSectorCount, setUnknownSectorCount] = useState(initialUnknownSectorCount);
+  const [sectorOptions, setSectorOptions] = useState<SectorOption[]>(initialSectorOptions);
   const [loading, setLoading] = useState(false);
   const deferredQuery = useDeferredValue(query.trim());
 
   useEffect(() => {
     setPage(0);
-  }, [deferredQuery, filter]);
+  }, [deferredQuery, filter, sectorState, sector]);
+
+  useEffect(() => {
+    if (sectorState === "unknown" && sector) {
+      setSector("");
+    }
+  }, [sectorState, sector]);
 
   useEffect(() => {
     let active = true;
@@ -72,19 +85,22 @@ export function UniverseDirectory({
     async function load() {
       setLoading(true);
       try {
-        const response = await fetch(buildPath(deferredQuery, filter, page), {
+        const response = await fetch(buildPath(deferredQuery, filter, sectorState, sector, page), {
           signal: controller.signal,
           cache: "no-store",
         });
         if (!response.ok) {
           return;
         }
-        const payload = (await response.json()) as UniverseResponse;
+        const payload = (await response.json()) as ReferenceStocksResponse;
         if (!active) {
           return;
         }
         setRows(payload.stocks ?? []);
         setFilteredCount(payload.filtered_count ?? 0);
+        setKnownSectorCount(payload.known_sector_count ?? 0);
+        setUnknownSectorCount(payload.unknown_sector_count ?? 0);
+        setSectorOptions(payload.sector_options ?? []);
       } catch {}
       if (active) {
         setLoading(false);
@@ -97,11 +113,15 @@ export function UniverseDirectory({
       active = false;
       controller.abort();
     };
-  }, [deferredQuery, filter, page]);
+  }, [deferredQuery, filter, sectorState, sector, page]);
 
   const totalPages = useMemo(() => Math.max(Math.ceil(filteredCount / PAGE_SIZE), 1), [filteredCount]);
   const startRow = filteredCount ? page * PAGE_SIZE + 1 : 0;
   const endRow = Math.min((page + 1) * PAGE_SIZE, filteredCount);
+  const classifiedOptions = useMemo(
+    () => sectorOptions.filter((option) => option.known && option.sector !== "Unknown"),
+    [sectorOptions],
+  );
 
   return (
     <div className="stackList">
@@ -123,16 +143,40 @@ export function UniverseDirectory({
             <option value="unhydrated">Not hydrated yet</option>
           </select>
         </div>
+        <div className="toolbarGroup">
+          <select className="toolbarSelect" value={sectorState} onChange={(event) => setSectorState(event.target.value)}>
+            <option value="all">All sectors</option>
+            <option value="known">Classified only</option>
+            <option value="unknown">Unknown only</option>
+          </select>
+        </div>
+        <div className="toolbarGroup">
+          <select
+            className="toolbarSelect"
+            value={sector}
+            onChange={(event) => setSector(event.target.value)}
+            disabled={sectorState === "unknown" || !classifiedOptions.length}
+          >
+            <option value="">All classified sectors</option>
+            {classifiedOptions.map((option) => (
+              <option key={option.sector} value={option.sector}>
+                {option.sector} ({option.count})
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="resultMeta">
         <span>{initialTotalCount} listed</span>
         <span>{hydratedCount} with history</span>
         <span>{watchlistCount} watchlist</span>
+        <span>{knownSectorCount} classified</span>
+        <span>{unknownSectorCount} unknown</span>
         <span>
           {startRow}-{endRow} of {filteredCount || 0}
         </span>
-        {loading ? <span>Refreshing…</span> : null}
+        {loading ? <span>Refreshing...</span> : null}
       </div>
 
       {rows.length ? (
@@ -178,7 +222,10 @@ export function UniverseDirectory({
 
       <div className="toolbarRow">
         <div className="resultMeta">
-          <span>Page {Math.min(page + 1, totalPages)} of {totalPages}</span>
+          <span>
+            Page {Math.min(page + 1, totalPages)} of {totalPages}
+          </span>
+          <span>{classifiedOptions.length} classified sectors available</span>
         </div>
         <div className="toolbarGroup">
           <button
