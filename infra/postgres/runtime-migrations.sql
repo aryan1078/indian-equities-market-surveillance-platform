@@ -60,3 +60,79 @@ CREATE INDEX IF NOT EXISTS idx_alert_events_symbol_detected_at
 
 CREATE INDEX IF NOT EXISTS idx_alert_events_status_detected_at
     ON operational.alert_events (status, detected_at DESC);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS warehouse.mv_sector_regime_summary AS
+WITH daily_summary AS (
+    SELECT
+        sec.sector_name,
+        COUNT(DISTINCT f.date_sk) AS sessions_covered,
+        COUNT(DISTINCT f.stock_sk) AS symbols_covered,
+        SUM(f.anomaly_count) AS total_anomalies,
+        AVG(f.avg_composite_score) AS avg_daily_composite_score,
+        MAX(f.max_composite_score) AS peak_daily_composite_score,
+        SUM(f.contagion_event_count) AS contagion_event_count,
+        MAX(d.calendar_date) AS latest_calendar_date
+    FROM warehouse.fact_market_day f
+    JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+    JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+    GROUP BY sec.sector_name
+),
+minute_summary AS (
+    SELECT
+        sec.sector_name,
+        COUNT(*) AS anomaly_minutes,
+        SUM(CASE WHEN f.contagion_flag THEN 1 ELSE 0 END) AS contagion_minutes
+    FROM warehouse.fact_anomaly_minute f
+    JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+    GROUP BY sec.sector_name
+)
+SELECT
+    daily_summary.sector_name,
+    daily_summary.sessions_covered,
+    daily_summary.symbols_covered,
+    COALESCE(minute_summary.anomaly_minutes, 0) AS anomaly_minutes,
+    daily_summary.total_anomalies,
+    COALESCE(minute_summary.contagion_minutes, 0) AS contagion_minutes,
+    daily_summary.contagion_event_count,
+    daily_summary.avg_daily_composite_score,
+    daily_summary.peak_daily_composite_score,
+    daily_summary.latest_calendar_date
+FROM daily_summary
+LEFT JOIN minute_summary
+  ON minute_summary.sector_name = daily_summary.sector_name;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS warehouse.mv_stock_signal_leaders AS
+WITH latest_snapshot AS (
+    SELECT DISTINCT ON (f.stock_sk)
+        f.stock_sk,
+        d.calendar_date AS latest_calendar_date,
+        f.anomaly_count AS latest_anomaly_count,
+        f.max_composite_score AS latest_peak_score
+    FROM warehouse.fact_market_day f
+    JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+    ORDER BY f.stock_sk, d.calendar_date DESC
+)
+SELECT
+    s.symbol,
+    s.company_name,
+    sec.sector_name,
+    COUNT(*) AS sessions_covered,
+    COUNT(*) FILTER (WHERE f.anomaly_count > 0) AS anomaly_days,
+    SUM(f.anomaly_count) AS total_anomalies,
+    AVG(f.avg_composite_score) AS avg_daily_composite_score,
+    MAX(f.max_composite_score) AS peak_daily_composite_score,
+    SUM(f.contagion_event_count) AS contagion_event_count,
+    latest_snapshot.latest_calendar_date,
+    latest_snapshot.latest_anomaly_count,
+    latest_snapshot.latest_peak_score
+FROM warehouse.fact_market_day f
+JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk AND s.is_current = true
+JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+JOIN latest_snapshot ON latest_snapshot.stock_sk = f.stock_sk
+GROUP BY
+    s.symbol,
+    s.company_name,
+    sec.sector_name,
+    latest_snapshot.latest_calendar_date,
+    latest_snapshot.latest_anomaly_count,
+    latest_snapshot.latest_peak_score;

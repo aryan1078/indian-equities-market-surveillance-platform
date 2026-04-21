@@ -55,6 +55,14 @@ def _cached(key: str, ttl_seconds: float, loader: Callable[[], Any]) -> Any:
     return _cache_store(key, ttl_seconds, loader())
 
 
+def _relation_row_count(conn, relation: str) -> int:
+    try:
+        row = conn.execute(f"SELECT COUNT(*) AS row_count FROM {relation}").fetchone()
+    except Exception:
+        return 0
+    return int(row["row_count"]) if row else 0
+
+
 def _clear_api_cache(prefix: str | None = None) -> None:
     if prefix is None:
         _API_CACHE.clear()
@@ -405,6 +413,8 @@ def _system_scale_snapshot(
         coverage_fact_count = int(conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.fact_surveillance_coverage").fetchone()["row_count"])
         sector_daily_count = int(conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_daily_summary").fetchone()["row_count"])
         sector_monthly_count = int(conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_monthly_summary").fetchone()["row_count"])
+        sector_regime_count = _relation_row_count(conn, "warehouse.mv_sector_regime_summary")
+        stock_leader_count = _relation_row_count(conn, "warehouse.mv_stock_signal_leaders")
         coverage_window = conn.execute(
             """
             SELECT COUNT(DISTINCT trading_date) AS trading_days_loaded,
@@ -469,6 +479,8 @@ def _system_scale_snapshot(
         "fact_surveillance_coverage": coverage_fact_count,
         "mv_sector_daily_summary": sector_daily_count,
         "mv_sector_monthly_summary": sector_monthly_count,
+        "mv_sector_regime_summary": sector_regime_count,
+        "mv_stock_signal_leaders": stock_leader_count,
     }
     operational_total_rows = sum(operational_counts.values())
     warehouse_total_rows = sum(warehouse_counts.values())
@@ -1179,13 +1191,56 @@ def sector_rollups() -> list[dict[str, Any]]:
     with pg_connection() as conn:
         rows = conn.execute(
             """
-            SELECT calendar_date, sector_name, avg_composite_score, max_composite_score, contagion_minutes
+            SELECT calendar_date, sector_name, active_minutes, avg_composite_score, max_composite_score, contagion_minutes
             FROM warehouse.mv_sector_daily_summary
             ORDER BY calendar_date DESC, avg_composite_score DESC
             LIMIT 100
             """
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+@app.get("/api/warehouse/summary")
+def warehouse_summary() -> dict[str, Any]:
+    with pg_connection() as conn:
+        row = conn.execute(
+            """
+            WITH market_window AS (
+                SELECT
+                    COUNT(*) AS market_day_rows,
+                    COUNT(DISTINCT f.stock_sk) AS stocks_covered,
+                    COUNT(DISTINCT f.sector_sk) AS sectors_covered,
+                    COUNT(DISTINCT f.date_sk) AS trading_days_loaded,
+                    COALESCE(SUM(f.anomaly_count), 0) AS total_anomalies,
+                    COALESCE(SUM(f.contagion_event_count), 0) AS total_contagion_events,
+                    COALESCE(MAX(f.max_composite_score), 0) AS peak_daily_composite_score
+                FROM warehouse.fact_market_day f
+            ),
+            date_window AS (
+                SELECT
+                    MIN(d.calendar_date) AS first_calendar_date,
+                    MAX(d.calendar_date) AS last_calendar_date
+                FROM warehouse.fact_market_day f
+                JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+            )
+            SELECT
+                market_window.market_day_rows,
+                market_window.stocks_covered,
+                market_window.sectors_covered,
+                market_window.trading_days_loaded,
+                market_window.total_anomalies,
+                market_window.total_contagion_events,
+                market_window.peak_daily_composite_score,
+                date_window.first_calendar_date,
+                date_window.last_calendar_date,
+                (SELECT COUNT(*) FROM warehouse.fact_anomaly_minute) AS anomaly_minute_rows,
+                (SELECT COUNT(*) FROM warehouse.fact_contagion_event) AS contagion_event_rows,
+                (SELECT COUNT(*) FROM warehouse.fact_surveillance_coverage) AS coverage_rows
+            FROM market_window
+            CROSS JOIN date_window
+            """
+        ).fetchone()
+    return dict(row) if row else {}
 
 
 @app.get("/api/warehouse/monthly-rollups")
@@ -1198,6 +1253,31 @@ def monthly_rollups() -> list[dict[str, Any]]:
             ORDER BY year DESC, month DESC, avg_daily_composite_score DESC
             LIMIT 100
             """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/warehouse/sector-regimes")
+def warehouse_sector_regimes(limit: int = Query(25, ge=1, le=100)) -> list[dict[str, Any]]:
+    with pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                sector_name,
+                sessions_covered,
+                symbols_covered,
+                anomaly_minutes,
+                total_anomalies,
+                contagion_minutes,
+                contagion_event_count,
+                avg_daily_composite_score,
+                peak_daily_composite_score,
+                latest_calendar_date
+            FROM warehouse.mv_sector_regime_summary
+            ORDER BY peak_daily_composite_score DESC, total_anomalies DESC, sector_name
+            LIMIT %s
+            """,
+            (limit,),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -1222,6 +1302,33 @@ def warehouse_stock_outliers(limit: int = Query(50, ge=1, le=200)) -> list[dict[
             JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
             JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
             ORDER BY d.calendar_date DESC, f.max_composite_score DESC, f.anomaly_count DESC, s.symbol
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/warehouse/stock-leaders")
+def warehouse_stock_leaders(limit: int = Query(50, ge=1, le=200)) -> list[dict[str, Any]]:
+    with pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                symbol,
+                company_name,
+                sector_name,
+                sessions_covered,
+                anomaly_days,
+                total_anomalies,
+                avg_daily_composite_score,
+                peak_daily_composite_score,
+                contagion_event_count,
+                latest_calendar_date,
+                latest_anomaly_count,
+                latest_peak_score
+            FROM warehouse.mv_stock_signal_leaders
+            ORDER BY peak_daily_composite_score DESC, total_anomalies DESC, symbol
             LIMIT %s
             """,
             (limit,),

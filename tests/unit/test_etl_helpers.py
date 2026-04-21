@@ -10,7 +10,7 @@ fake_db.get_cassandra_session = lambda: None
 fake_db.pg_connection = lambda: None
 sys.modules["market_surveillance.db"] = fake_db
 
-from etl_service.main import normalize_timestamp, normalize_trading_date
+from etl_service.main import canonical_stage_sector, normalize_timestamp, normalize_trading_date
 
 if real_db is not None:
     sys.modules["market_surveillance.db"] = real_db
@@ -28,3 +28,13 @@ def test_normalize_trading_date_accepts_iso_string() -> None:
 
 def test_normalize_timestamp_accepts_iso_string() -> None:
     assert normalize_timestamp("2026-03-16T09:19:00+05:30") == datetime.fromisoformat("2026-03-16T09:19:00+05:30")
+
+
+def test_canonical_stage_sector_prefers_metadata_for_unknown_rows() -> None:
+    metadata_lookup = {
+        "TATACONSUM.NS": types.SimpleNamespace(sector="Consumer Staples"),
+    }
+
+    assert canonical_stage_sector("TATACONSUM.NS", "Unknown", metadata_lookup) == "Consumer Staples"
+    assert canonical_stage_sector("TATACONSUM.NS", None, metadata_lookup) == "Consumer Staples"
+    assert canonical_stage_sector("TATACONSUM.NS", "Consumer Staples", metadata_lookup) == "Consumer Staples"

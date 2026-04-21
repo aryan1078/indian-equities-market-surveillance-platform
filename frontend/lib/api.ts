@@ -264,6 +264,21 @@ export type WarehouseDailyRollup = {
   contagion_minutes: number;
 };
 
+export type WarehouseSummary = {
+  market_day_rows: number;
+  stocks_covered: number;
+  sectors_covered: number;
+  trading_days_loaded: number;
+  total_anomalies: number;
+  total_contagion_events: number;
+  peak_daily_composite_score: number;
+  first_calendar_date?: string | null;
+  last_calendar_date?: string | null;
+  anomaly_minute_rows: number;
+  contagion_event_rows: number;
+  coverage_rows: number;
+};
+
 export type WarehouseMonthlyRollup = {
   year: number;
   quarter: number;
@@ -272,6 +287,19 @@ export type WarehouseMonthlyRollup = {
   avg_daily_composite_score: number;
   max_daily_composite_score: number;
   contagion_event_count: number;
+};
+
+export type WarehouseSectorRegime = {
+  sector_name: string;
+  sessions_covered: number;
+  symbols_covered: number;
+  anomaly_minutes: number;
+  total_anomalies: number;
+  contagion_minutes: number;
+  contagion_event_count: number;
+  avg_daily_composite_score: number;
+  peak_daily_composite_score: number;
+  latest_calendar_date: string;
 };
 
 export type WarehouseStockOutlier = {
@@ -284,6 +312,21 @@ export type WarehouseStockOutlier = {
   avg_composite_score: number;
   avg_volume_z_score: number;
   contagion_event_count: number;
+};
+
+export type WarehouseStockLeader = {
+  symbol: string;
+  company_name: string;
+  sector_name: string;
+  sessions_covered: number;
+  anomaly_days: number;
+  total_anomalies: number;
+  avg_daily_composite_score: number;
+  peak_daily_composite_score: number;
+  contagion_event_count: number;
+  latest_calendar_date: string;
+  latest_anomaly_count: number;
+  latest_peak_score: number;
 };
 
 export type SystemHealthResponse = {
@@ -435,12 +478,24 @@ export async function fetchWarehouseRollups() {
   return getJson<WarehouseDailyRollup[]>("/api/warehouse/sector-rollups");
 }
 
+export async function fetchWarehouseSummary() {
+  return getJson<WarehouseSummary>("/api/warehouse/summary");
+}
+
 export async function fetchWarehouseMonthly() {
   return getJson<WarehouseMonthlyRollup[]>("/api/warehouse/monthly-rollups");
 }
 
+export async function fetchWarehouseSectorRegimes(limit = 20) {
+  return getJson<WarehouseSectorRegime[]>(`/api/warehouse/sector-regimes?limit=${limit}`);
+}
+
 export async function fetchWarehouseStockOutliers() {
   return getJson<WarehouseStockOutlier[]>("/api/warehouse/stock-outliers");
+}
+
+export async function fetchWarehouseStockLeaders(limit = 50) {
+  return getJson<WarehouseStockLeader[]>(`/api/warehouse/stock-leaders?limit=${limit}`);
 }
 
 export async function fetchSystemHealth() {

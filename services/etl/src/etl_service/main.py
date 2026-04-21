@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from market_surveillance.db import get_cassandra_session, pg_connection
 from market_surveillance.market_time import date_sk, market_tz, minute_of_day
-from market_surveillance.metadata import load_stock_references
+from market_surveillance.metadata import load_stock_references, valid_peer_sector
 from market_surveillance.sql import iter_date_dimension
 
 
@@ -91,7 +91,11 @@ def load_dimensions(trading_date: date) -> None:
                 """
                 INSERT INTO warehouse.dim_stock (symbol, company_name, sector_name, exchange_code, valid_from, is_current)
                 VALUES (%s, %s, %s, %s, %s, true)
-                ON CONFLICT (symbol, valid_from) DO NOTHING
+                ON CONFLICT (symbol, valid_from) DO UPDATE
+                SET company_name = EXCLUDED.company_name,
+                    sector_name = EXCLUDED.sector_name,
+                    exchange_code = EXCLUDED.exchange_code,
+                    is_current = true
                 """,
                 (stock.symbol, stock.company_name, stock.sector, stock.exchange, trading_date),
             )
@@ -133,15 +137,29 @@ def normalize_timestamp(value: Any) -> datetime:
     return datetime.fromisoformat(str(value))
 
 
+def canonical_stage_sector(symbol: str, sector: Any, metadata_lookup: dict[str, Any]) -> str:
+    normalized = str(sector or "").strip()
+    if valid_peer_sector(normalized):
+        return normalized
+
+    metadata_stock = metadata_lookup.get(symbol)
+    metadata_sector = getattr(metadata_stock, "sector", None)
+    if valid_peer_sector(metadata_sector):
+        return str(metadata_sector)
+    return normalized or "Unknown"
+
+
 def stage_rows(run_id: str, rows: list[dict]) -> tuple[int, int]:
     if not rows:
         return 0, 0
+    metadata_lookup = {stock.symbol: stock for stock in load_stock_references()}
     with pg_connection() as conn:
         conn.execute("DELETE FROM staging.anomaly_metrics_stage WHERE run_id = %s", (run_id,))
         for row in rows:
             trading_date = normalize_trading_date(row["trading_date"])
             timestamp_utc = normalize_timestamp(row["timestamp_utc"])
             timestamp_ist = normalize_timestamp(row["timestamp_ist"])
+            sector = canonical_stage_sector(str(row["symbol"]), row["sector"], metadata_lookup)
             conn.execute(
                 """
                 INSERT INTO staging.anomaly_metrics_stage (
@@ -157,7 +175,7 @@ def stage_rows(run_id: str, rows: list[dict]) -> tuple[int, int]:
                     timestamp_utc,
                     timestamp_ist,
                     row["exchange"],
-                    row["sector"],
+                    sector,
                     row["close"],
                     row["volume"],
                     row["return_pct"],
@@ -249,9 +267,95 @@ def rebuild_materialized_views(conn) -> int:
          AND contagion_summary.sector_name = market_summary.sector_name
         """
     )
+    conn.execute("DROP MATERIALIZED VIEW IF EXISTS warehouse.mv_sector_regime_summary")
+    conn.execute(
+        """
+        CREATE MATERIALIZED VIEW warehouse.mv_sector_regime_summary AS
+        WITH daily_summary AS (
+            SELECT
+                sec.sector_name,
+                COUNT(DISTINCT f.date_sk) AS sessions_covered,
+                COUNT(DISTINCT f.stock_sk) AS symbols_covered,
+                SUM(f.anomaly_count) AS total_anomalies,
+                AVG(f.avg_composite_score) AS avg_daily_composite_score,
+                MAX(f.max_composite_score) AS peak_daily_composite_score,
+                SUM(f.contagion_event_count) AS contagion_event_count,
+                MAX(d.calendar_date) AS latest_calendar_date
+            FROM warehouse.fact_market_day f
+            JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+            JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+            GROUP BY sec.sector_name
+        ),
+        minute_summary AS (
+            SELECT
+                sec.sector_name,
+                COUNT(*) AS anomaly_minutes,
+                SUM(CASE WHEN f.contagion_flag THEN 1 ELSE 0 END) AS contagion_minutes
+            FROM warehouse.fact_anomaly_minute f
+            JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+            GROUP BY sec.sector_name
+        )
+        SELECT
+            daily_summary.sector_name,
+            daily_summary.sessions_covered,
+            daily_summary.symbols_covered,
+            COALESCE(minute_summary.anomaly_minutes, 0) AS anomaly_minutes,
+            daily_summary.total_anomalies,
+            COALESCE(minute_summary.contagion_minutes, 0) AS contagion_minutes,
+            daily_summary.contagion_event_count,
+            daily_summary.avg_daily_composite_score,
+            daily_summary.peak_daily_composite_score,
+            daily_summary.latest_calendar_date
+        FROM daily_summary
+        LEFT JOIN minute_summary
+          ON minute_summary.sector_name = daily_summary.sector_name
+        """
+    )
+    conn.execute("DROP MATERIALIZED VIEW IF EXISTS warehouse.mv_stock_signal_leaders")
+    conn.execute(
+        """
+        CREATE MATERIALIZED VIEW warehouse.mv_stock_signal_leaders AS
+        WITH latest_snapshot AS (
+            SELECT DISTINCT ON (f.stock_sk)
+                f.stock_sk,
+                d.calendar_date AS latest_calendar_date,
+                f.anomaly_count AS latest_anomaly_count,
+                f.max_composite_score AS latest_peak_score
+            FROM warehouse.fact_market_day f
+            JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+            ORDER BY f.stock_sk, d.calendar_date DESC
+        )
+        SELECT
+            s.symbol,
+            s.company_name,
+            sec.sector_name,
+            COUNT(*) AS sessions_covered,
+            COUNT(*) FILTER (WHERE f.anomaly_count > 0) AS anomaly_days,
+            SUM(f.anomaly_count) AS total_anomalies,
+            AVG(f.avg_composite_score) AS avg_daily_composite_score,
+            MAX(f.max_composite_score) AS peak_daily_composite_score,
+            SUM(f.contagion_event_count) AS contagion_event_count,
+            latest_snapshot.latest_calendar_date,
+            latest_snapshot.latest_anomaly_count,
+            latest_snapshot.latest_peak_score
+        FROM warehouse.fact_market_day f
+        JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk AND s.is_current = true
+        JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+        JOIN latest_snapshot ON latest_snapshot.stock_sk = f.stock_sk
+        GROUP BY
+            s.symbol,
+            s.company_name,
+            sec.sector_name,
+            latest_snapshot.latest_calendar_date,
+            latest_snapshot.latest_anomaly_count,
+            latest_snapshot.latest_peak_score
+        """
+    )
     daily_rows = conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_daily_summary").fetchone()["row_count"]
     monthly_rows = conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_monthly_summary").fetchone()["row_count"]
-    return daily_rows + monthly_rows
+    sector_regime_rows = conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_sector_regime_summary").fetchone()["row_count"]
+    stock_leader_rows = conn.execute("SELECT COUNT(*) AS row_count FROM warehouse.mv_stock_signal_leaders").fetchone()["row_count"]
+    return daily_rows + monthly_rows + sector_regime_rows + stock_leader_rows
 
 
 def purge_facts_for_date(conn, trading_date: date) -> None:

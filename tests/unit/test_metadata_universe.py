@@ -29,6 +29,13 @@ def test_infer_sector_from_identity_recognizes_common_nse_patterns():
     assert infer_sector_from_identity("Adani Ports and Special Economic Zone Limited", ["ADANIPORTS"]) == "Industrials"
 
 
+def test_infer_sector_from_identity_uses_overrides_for_ambiguous_large_caps():
+    assert infer_sector_from_identity("360 ONE WAM LIMITED", ["360ONE"], "360ONE.NS") == "Financial Services"
+    assert infer_sector_from_identity("ABB India Limited", ["ABB"], "ABB.NS") == "Industrials"
+    assert infer_sector_from_identity("Ather Energy Limited", ["ATHERENERG"], "ATHERENERG.NS") == "Automobile"
+    assert infer_sector_from_identity("Bajaj Consumer Care Limited", ["BAJAJCON"], "BAJAJCON.NS") == "Consumer Staples"
+
+
 def test_build_records_preserves_watchlist_and_metadata():
     module = _sync_module()
     source_rows = [

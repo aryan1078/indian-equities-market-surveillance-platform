@@ -1,17 +1,29 @@
 import { StatCard } from "../../components/stat-card";
-import { fetchWarehouseMonthly, fetchWarehouseRollups, fetchWarehouseStockOutliers } from "../../lib/api";
-import { formatNumber } from "../../lib/format";
+import {
+  fetchWarehouseMonthly,
+  fetchWarehouseRollups,
+  fetchWarehouseSectorRegimes,
+  fetchWarehouseStockLeaders,
+  fetchWarehouseStockOutliers,
+  fetchWarehouseSummary,
+} from "../../lib/api";
+import { formatCompactIndian, formatDate, formatNumber } from "../../lib/format";
 
 export default async function WarehousePage() {
-  const [daily, monthly, outliers] = await Promise.all([
+  const [summary, daily, monthly, outliers, sectorRegimes, stockLeaders] = await Promise.all([
+    fetchWarehouseSummary(),
     fetchWarehouseRollups(),
     fetchWarehouseMonthly(),
     fetchWarehouseStockOutliers(),
+    fetchWarehouseSectorRegimes(20),
+    fetchWarehouseStockLeaders(30),
   ]);
   const dailyRows = daily ?? [];
   const monthlyRows = monthly ?? [];
   const outlierRows = outliers ?? [];
-  const latestDate = dailyRows[0]?.calendar_date ?? null;
+  const regimeRows = sectorRegimes ?? [];
+  const leaderRows = stockLeaders ?? [];
+  const latestDate = summary?.last_calendar_date ?? dailyRows[0]?.calendar_date ?? null;
   const hottestSector = [...dailyRows].sort((left, right) => right.max_composite_score - left.max_composite_score)[0];
 
   return (
@@ -23,20 +35,139 @@ export default async function WarehousePage() {
             <h2 className="pageTitle">Warehouse analytics</h2>
           </div>
           <div className="pageMetaGroup">
-            <span className="metaTag">{latestDate ?? "No ETL date"}</span>
+            <span className="metaTag">{summary?.trading_days_loaded ?? 0} trading days</span>
+            <span className="metaTag">{latestDate ? formatDate(latestDate) : "No ETL date"}</span>
           </div>
         </div>
         <div className="statsGrid">
-          <StatCard label="Daily rows" value={String(dailyRows.length)} />
-          <StatCard label="Monthly rows" value={String(monthlyRows.length)} />
+          <StatCard
+            label="Minute facts"
+            value={formatCompactIndian(summary?.anomaly_minute_rows, 2)}
+            hint={summary ? `${summary.anomaly_minute_rows.toLocaleString("en-IN")} warehouse anomaly rows` : "No warehouse load yet"}
+          />
+          <StatCard
+            label="Market-day facts"
+            value={String(summary?.market_day_rows ?? 0)}
+            hint={`${summary?.stocks_covered ?? 0} stocks | ${summary?.sectors_covered ?? 0} sectors`}
+            tone="accent"
+          />
+          <StatCard
+            label="Coverage facts"
+            value={formatCompactIndian(summary?.coverage_rows, 2)}
+            hint="Factless surveillance coverage grain"
+          />
+          <StatCard
+            label="Contagion facts"
+            value={String(summary?.contagion_event_rows ?? 0)}
+            hint={`${summary?.total_contagion_events ?? 0} linked market-day contagion flags`}
+            tone="warning"
+          />
           <StatCard
             label="Peak sector"
             value={hottestSector?.sector_name ?? "N/A"}
             hint={hottestSector ? formatNumber(hottestSector.max_composite_score, 3) : "No aggregate"}
-            tone="warning"
+            tone="critical"
           />
-          <StatCard label="Outlier rows" value={String(outlierRows.length)} hint="Warehouse fact_market_day" tone="accent" />
+          <StatCard
+            label="Total anomalies"
+            value={formatCompactIndian(summary?.total_anomalies, 2)}
+            hint={
+              summary
+                ? `${summary.first_calendar_date ? formatDate(summary.first_calendar_date) : "N/A"} to ${summary.last_calendar_date ? formatDate(summary.last_calendar_date) : "N/A"}`
+                : "Warehouse range unavailable"
+            }
+          />
         </div>
+      </section>
+
+      <section className="contentGrid twoUp">
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Sector regimes</p>
+              <h3 className="panelTitle">Cross-session sector leaders</h3>
+            </div>
+            <span className="panelMeta">{regimeRows.length} sectors</span>
+          </div>
+          {regimeRows.length ? (
+            <div className="tableWrap">
+              <table className="dataTable">
+                <thead>
+                  <tr>
+                    <th>Sector</th>
+                    <th>Sessions</th>
+                    <th>Stocks</th>
+                    <th>Minute facts</th>
+                    <th>Total anomalies</th>
+                    <th>Peak score</th>
+                    <th>Contagion</th>
+                    <th>Latest day</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {regimeRows.map((row) => (
+                    <tr key={row.sector_name}>
+                      <td>{row.sector_name}</td>
+                      <td>{String(row.sessions_covered)}</td>
+                      <td>{String(row.symbols_covered)}</td>
+                      <td>{String(row.anomaly_minutes)}</td>
+                      <td>{String(row.total_anomalies)}</td>
+                      <td>{formatNumber(row.peak_daily_composite_score, 3)}</td>
+                      <td>{String(row.contagion_event_count)}</td>
+                      <td>{formatDate(row.latest_calendar_date)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="emptyState">Sector regime rollups will appear after ETL refresh.</div>
+          )}
+        </article>
+
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Stock leaders</p>
+              <h3 className="panelTitle">Warehouse stock leaderboard</h3>
+            </div>
+            <span className="panelMeta">{leaderRows.length} stocks</span>
+          </div>
+          {leaderRows.length ? (
+            <div className="tableWrap">
+              <table className="dataTable">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Company</th>
+                    <th>Sector</th>
+                    <th>Anomaly days</th>
+                    <th>Total anomalies</th>
+                    <th>Latest peak</th>
+                    <th>Peak score</th>
+                    <th>Contagion</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leaderRows.map((row) => (
+                    <tr key={row.symbol}>
+                      <td>{row.symbol}</td>
+                      <td>{row.company_name}</td>
+                      <td>{row.sector_name}</td>
+                      <td>{String(row.anomaly_days)}</td>
+                      <td>{String(row.total_anomalies)}</td>
+                      <td>{formatNumber(row.latest_peak_score, 3)}</td>
+                      <td>{formatNumber(row.peak_daily_composite_score, 3)}</td>
+                      <td>{String(row.contagion_event_count)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="emptyState">Stock leader rollups will appear after ETL refresh.</div>
+          )}
+        </article>
       </section>
 
       <section className="contentGrid twoUp">
