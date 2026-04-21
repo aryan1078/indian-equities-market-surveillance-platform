@@ -1,3 +1,4 @@
+import { ExplainerCards } from "../../components/explainer-cards";
 import { LineChart } from "../../components/line-chart";
 import { StatCard } from "../../components/stat-card";
 import {
@@ -129,6 +130,43 @@ export default async function WarehousePage() {
           />
         </div>
       </section>
+
+      <ExplainerCards
+        eyebrow="Reading guide"
+        title="What the warehouse stats mean"
+        meta="Analytical terms"
+        footerHref="/methodology"
+        footerLabel="Open warehouse methodology"
+        items={[
+          {
+            title: "Minute fact",
+            value: "fact_anomaly_minute",
+            description:
+              "The warehouse keeps minute-grain anomaly observations separate so intraday pressure analysis stays mathematically clean.",
+            tone: "accent",
+          },
+          {
+            title: "Market-day fact",
+            value: "Daily stock rollup",
+            description:
+              "This is the daily grain used for stock-level summaries such as anomaly days, peak score, and contagion-event counts.",
+            tone: "warning",
+          },
+          {
+            title: "Momentum",
+            value: "Recent vs prior",
+            description:
+              "Sector momentum compares the recent session window with the prior window to show whether anomaly activity is accelerating or fading.",
+          },
+          {
+            title: "Persistence",
+            value: "Signal durability",
+            description:
+              "Persistence tracks how often a stock appears across sessions, which helps distinguish one-off bursts from repeatedly stressed names.",
+            tone: "critical",
+          },
+        ]}
+      />
 
       <section className="contentGrid twoUp">
         <article className="surface">

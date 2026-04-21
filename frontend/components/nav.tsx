@@ -7,6 +7,7 @@ const links = [
   { href: "/", label: "Overview" },
   { href: "/stocks", label: "Stocks" },
   { href: "/contagion", label: "Contagion" },
+  { href: "/methodology", label: "Methodology" },
   { href: "/warehouse", label: "Warehouse" },
   { href: "/system", label: "System" },
   { href: "/replay", label: "Replay" },

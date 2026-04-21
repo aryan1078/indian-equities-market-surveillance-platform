@@ -1,9 +1,11 @@
 import Link from "next/link";
 
+import { ExplainerCards } from "../components/explainer-cards";
 import { LiveTapePanel } from "../components/live-tape-panel";
 import { StatCard } from "../components/stat-card";
 import { fetchOverview, fetchReferenceStocks, fetchScreener } from "../lib/api";
 import {
+  formatDate,
   formatDateTime,
   formatNumber,
   formatPercent,
@@ -65,6 +67,9 @@ export default async function OverviewPage() {
       }));
   const liveFlaggedCount = liveMarket.filter((item) => item.is_anomalous).length;
   const topSector = sectorCards[0];
+  const staleAlertCount = overview?.stale_open_alert_count ?? 0;
+  const currentAlertDate = overview?.current_alert_trading_date;
+  const latestStaleAlertDate = overview?.latest_stale_alert_date;
   const shortcuts = [
     {
       href: "/stocks",
@@ -127,9 +132,15 @@ export default async function OverviewPage() {
             hint={overview?.as_of ? formatDateTime(overview.as_of) : "No current market minute"}
           />
           <StatCard
-            label="Open alerts"
+            label="Active alerts"
             value={String(overview?.open_alert_count ?? alerts.length)}
-            hint={`${alerts.length} recent`}
+            hint={
+              staleAlertCount
+                ? `${staleAlertCount} historical unresolved`
+                : currentAlertDate
+                  ? `Current queue ${formatDate(currentAlertDate)}`
+                  : `${alerts.length} recent`
+            }
             tone="warning"
           />
           <StatCard
@@ -158,6 +169,43 @@ export default async function OverviewPage() {
         ))}
       </section>
 
+      <ExplainerCards
+        eyebrow="Reading guide"
+        title="What the live terms mean"
+        meta="Live operators’ vocabulary"
+        footerHref="/methodology"
+        footerLabel="Open methodology"
+        items={[
+          {
+            title: "Signal",
+            value: "Latest state",
+            description:
+              "A symbol’s newest anomaly measurement. The signal turns flagged when price z, volume z, or the composite score crosses the configured threshold.",
+            tone: "accent",
+          },
+          {
+            title: "Alert",
+            value: "Persisted event",
+            description:
+              "An operator-facing record written after the signal logic and cooldown rules run. The overview queue shows current-session alerts first and separates stale unresolved items.",
+            tone: "warning",
+          },
+          {
+            title: "Contagion",
+            value: "Sector spread",
+            description:
+              "A five-minute sector observation window where a trigger stock is confirmed by anomalous peers, producing a propagation event with a risk score.",
+            tone: "critical",
+          },
+          {
+            title: "Warehouse",
+            value: "Historical lens",
+            description:
+              "The analytical layer that rolls minute facts into daily, monthly, persistence, and regime views for cross-session investigation.",
+          },
+        ]}
+      />
+
       <section className="contentGrid twoUp">
         <article className="surface">
           <div className="panelHeader">
@@ -182,7 +230,7 @@ export default async function OverviewPage() {
               <p className="panelEyebrow">Alerts</p>
               <h3 className="panelTitle">Open queue</h3>
             </div>
-            <span className="panelMeta">{alerts.length} recent</span>
+            <span className="panelMeta">{alerts.length} current-session rows</span>
           </div>
           {alerts.length ? (
             <div className="stackList">
@@ -190,7 +238,10 @@ export default async function OverviewPage() {
                 <div key={alert.event_id} className="alertCard">
                   <div className="rowBetween">
                     <strong>{alert.symbol}</strong>
-                    <span className={`severityTag ${severityClass(alert.severity)}`}>{alert.severity}</span>
+                    <div className="toolbarGroup">
+                      {alert.is_stale ? <span className="severityTag stale">stale</span> : null}
+                      <span className={`severityTag ${severityClass(alert.severity)}`}>{alert.severity}</span>
+                    </div>
                   </div>
                   <div className="alertText">{alert.message}</div>
                   <div className="metaRow">
@@ -199,6 +250,11 @@ export default async function OverviewPage() {
                   </div>
                 </div>
               ))}
+            </div>
+          ) : staleAlertCount ? (
+            <div className="statusNote warning">
+              No current-session open alerts are active. {staleAlertCount} unresolved historical alerts remain from{" "}
+              {formatDate(latestStaleAlertDate)} and are available from the alerts bell for review or acknowledgement.
             </div>
           ) : (
             <div className="emptyState">No open alerts.</div>

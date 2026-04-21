@@ -56,7 +56,10 @@ export function StockAlertList({ initialAlerts }: StockAlertListProps) {
         <div key={alert.event_id} className="alertCard">
           <div className="rowBetween">
             <strong>{alert.title}</strong>
-            <span className={`severityTag ${severityClass(alert.severity)}`}>{alert.severity}</span>
+            <div className="toolbarGroup">
+              {alert.is_stale ? <span className="severityTag stale">stale</span> : null}
+              <span className={`severityTag ${severityClass(alert.severity)}`}>{alert.severity}</span>
+            </div>
           </div>
           <div className="alertText">{alert.message}</div>
           <div className="metaRow">

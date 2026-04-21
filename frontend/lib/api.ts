@@ -106,6 +106,7 @@ export type AlertItem = {
   volume_z_score?: number | null;
   event_payload?: Record<string, unknown>;
   acknowledged_at?: string | null;
+  is_stale?: boolean;
 };
 
 export type OverviewResponse = {
@@ -121,6 +122,10 @@ export type OverviewResponse = {
   recent_contagion_events: ContagionItem[];
   recent_alerts: AlertItem[];
   open_alert_count: number;
+  total_open_alert_count?: number;
+  stale_open_alert_count?: number;
+  current_alert_trading_date?: string | null;
+  latest_stale_alert_date?: string | null;
   tracked_symbol_count: number;
   tracked_sector_count: number;
   hydrated_symbol_count?: number;
@@ -473,6 +478,64 @@ export type ReplayStatusResponse = {
   };
 };
 
+export type MethodologyResponse = {
+  market: {
+    timezone: string;
+    session_open: string;
+    session_close: string;
+    session_minutes: number;
+    scope: string;
+  };
+  anomaly: {
+    warmup_minutes: number;
+    ewma_alpha: number;
+    price_z_threshold: number;
+    volume_z_threshold: number;
+    composite_threshold: number;
+    composite_weights: {
+      price_z: number;
+      volume_z: number;
+    };
+    threshold_rationale: string;
+    formulas: Array<{
+      name: string;
+      formula: string;
+      meaning: string;
+    }>;
+    flag_rule: string;
+    severity_bands: Array<{
+      severity: string;
+      rule: string;
+    }>;
+  };
+  alerts: {
+    cooldown_minutes: number;
+    notification_min_severity: string;
+    logic: string;
+  };
+  contagion: {
+    window_minutes: number;
+    trigger_rule: string;
+    peer_rule: string;
+    risk_score_formula: string;
+    why: string;
+  };
+  warehouse: {
+    facts: string[];
+    why: string;
+  };
+};
+
+export type AlertsLiveResponse = {
+  items: AlertItem[];
+  open_count: number;
+  active_open_count?: number;
+  stale_open_count?: number;
+  display_scope?: string;
+  current_trading_date?: string | null;
+  scope_reference_date?: string | null;
+};
+
 export async function fetchOverview() {
   return getJson<OverviewResponse>("/api/overview");
 }
@@ -574,4 +637,8 @@ export async function fetchSystemRuns() {
 
 export async function fetchReplayStatus() {
   return getJson<ReplayStatusResponse>("/api/replay/status");
+}
+
+export async function fetchMethodology() {
+  return getJson<MethodologyResponse>("/api/methodology");
 }

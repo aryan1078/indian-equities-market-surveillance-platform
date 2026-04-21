@@ -1,8 +1,11 @@
+from datetime import date
+
 from api_service.main import (
     _alert_summary,
     _anomaly_summary,
     _filter_latest_trading_session,
     _history_summary,
+    _resolve_alert_scope,
     _streaming_counts_from_bulk_runs,
     _system_scale_projection,
 )
@@ -113,3 +116,34 @@ def test_filter_latest_trading_session_drops_stale_symbols():
     )
 
     assert set(filtered) == {"INFY.NS", "SBIN.NS"}
+
+
+def test_resolve_alert_scope_separates_current_and_stale_open_alerts():
+    snapshot = _resolve_alert_scope(
+        {
+            date(2026, 3, 16): 4,
+        },
+        date(2026, 4, 20),
+    )
+
+    assert snapshot["current_trading_date"] == date(2026, 4, 20)
+    assert snapshot["current_open_count"] == 0
+    assert snapshot["stale_open_count"] == 4
+    assert snapshot["total_open_count"] == 4
+    assert snapshot["latest_stale_alert_date"] == date(2026, 3, 16)
+
+
+def test_resolve_alert_scope_falls_back_to_latest_open_date_without_market_reference():
+    snapshot = _resolve_alert_scope(
+        {
+            date(2026, 3, 16): 4,
+            date(2026, 4, 8): 2,
+        },
+        None,
+    )
+
+    assert snapshot["current_trading_date"] == date(2026, 4, 8)
+    assert snapshot["current_open_count"] == 2
+    assert snapshot["stale_open_count"] == 4
+    assert snapshot["total_open_count"] == 6
+    assert snapshot["latest_stale_alert_date"] == date(2026, 3, 16)

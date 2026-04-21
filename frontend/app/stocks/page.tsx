@@ -1,3 +1,4 @@
+import { ExplainerCards } from "../../components/explainer-cards";
 import { StatCard } from "../../components/stat-card";
 import { StocksScreener } from "../../components/stocks-screener";
 import { UniverseDirectory } from "../../components/universe-directory";
@@ -68,6 +69,43 @@ export default async function StocksPage() {
           />
         </div>
       </section>
+
+      <ExplainerCards
+        eyebrow="Reading guide"
+        title="How to read the stock workspace"
+        meta="Signal terms"
+        footerHref="/methodology"
+        footerLabel="View formulas and thresholds"
+        items={[
+          {
+            title: "Price z-score",
+            value: "Return surprise",
+            description:
+              "Standardized one-minute return: positive means the move is above the recent EWMA mean, negative means it is below.",
+            tone: "accent",
+          },
+          {
+            title: "Volume z-score",
+            value: "Participation surprise",
+            description:
+              "Standardized volume spike relative to recent volume behavior. It helps separate quiet drifts from moves backed by abnormal participation.",
+            tone: "warning",
+          },
+          {
+            title: "Composite score",
+            value: "0.6 price + 0.4 volume",
+            description:
+              "Weighted ranking score used to prioritize unusual points when price and volume both matter.",
+            tone: "critical",
+          },
+          {
+            title: "Signal state",
+            value: "Flagged or normal",
+            description:
+              "A row is flagged when price z, volume z, or the composite score crosses the configured surveillance threshold.",
+          },
+        ]}
+      />
 
       <section className="surface">
         <div className="panelHeader">

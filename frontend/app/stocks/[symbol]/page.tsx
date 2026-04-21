@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { AnomalyScoreChart } from "../../../components/anomaly-score-chart";
+import { ExplainerCards } from "../../../components/explainer-cards";
 import { LineChart } from "../../../components/line-chart";
 import { StockAlertList } from "../../../components/stock-alert-list";
 import { StatCard } from "../../../components/stat-card";
@@ -134,6 +135,43 @@ export default async function StockDetailPage({ params }: PageProps) {
           />
         </div>
       </section>
+
+      <ExplainerCards
+        eyebrow="Reading guide"
+        title="Signal terms for this stock"
+        meta="Local signal legend"
+        footerHref="/methodology"
+        footerLabel="Open full methodology"
+        items={[
+          {
+            title: "Price z",
+            value: formatNumber(latestAnomaly?.price_z_score, 2),
+            description:
+              "Standardized one-minute return. Larger absolute values mean the latest move is far from the recent return baseline.",
+            tone: "accent",
+          },
+          {
+            title: "Volume z",
+            value: formatNumber(latestAnomaly?.volume_z_score, 2),
+            description:
+              "Standardized participation surprise. It tells you whether the move is happening on unusual volume.",
+            tone: "warning",
+          },
+          {
+            title: "Composite",
+            value: formatNumber(latestAnomaly?.composite_score, 3),
+            description:
+              "Weighted score used to rank the signal: 60% price z and 40% volume z.",
+            tone: "critical",
+          },
+          {
+            title: "Alert",
+            value: alertSummary.open_count ? `${alertSummary.open_count} open` : "None open",
+            description:
+              "A persisted operator event. Historical rows may be marked stale when they belong to an older monitored session.",
+          },
+        ]}
+      />
 
       <section className="surface">
         <div className="panelHeader">

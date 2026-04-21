@@ -3,11 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiUrl, type AlertItem } from "../lib/api";
-import { formatDateTime, severityLabel } from "../lib/format";
+import { formatDate, formatDateTime, severityLabel } from "../lib/format";
 
 type AlertResponse = {
   items: AlertItem[];
   open_count: number;
+  active_open_count?: number;
+  stale_open_count?: number;
+  display_scope?: string;
+  current_trading_date?: string | null;
+  scope_reference_date?: string | null;
 };
 
 const STORAGE_KEY = "market-surveillance-seen-alerts";
@@ -35,6 +40,10 @@ export function AlertsBell() {
   const [open, setOpen] = useState(false);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [openCount, setOpenCount] = useState(0);
+  const [activeOpenCount, setActiveOpenCount] = useState(0);
+  const [staleOpenCount, setStaleOpenCount] = useState(0);
+  const [displayScope, setDisplayScope] = useState("current");
+  const [scopeReferenceDate, setScopeReferenceDate] = useState<string | null>(null);
   const seenRef = useRef<Set<string>>(new Set());
 
   async function refresh() {
@@ -46,6 +55,10 @@ export function AlertsBell() {
       const payload = (await response.json()) as AlertResponse;
       setAlerts(payload.items ?? []);
       setOpenCount(payload.open_count ?? 0);
+      setActiveOpenCount(payload.active_open_count ?? 0);
+      setStaleOpenCount(payload.stale_open_count ?? 0);
+      setDisplayScope(payload.display_scope ?? "current");
+      setScopeReferenceDate(payload.scope_reference_date ?? null);
     } catch {}
   }
 
@@ -62,6 +75,9 @@ export function AlertsBell() {
     }
     let changed = false;
     for (const alert of alerts) {
+      if (alert.is_stale) {
+        continue;
+      }
       if (seenRef.current.has(alert.event_id)) {
         continue;
       }
@@ -93,6 +109,12 @@ export function AlertsBell() {
   }
 
   const label = useMemo(() => (openCount > 99 ? "99+" : String(openCount)), [openCount]);
+  const summaryText =
+    displayScope === "stale"
+      ? `No current-session open alerts. Showing ${staleOpenCount} unresolved historical alerts from ${formatDate(scopeReferenceDate)}.`
+      : activeOpenCount
+        ? `${activeOpenCount} current-session alerts${staleOpenCount ? ` | ${staleOpenCount} historical unresolved` : ""}`
+        : "No current-session alerts.";
 
   function severityClass(value: string | null | undefined) {
     const severity = severityLabel(value);
@@ -122,6 +144,7 @@ export function AlertsBell() {
               Desktop
             </button>
           </div>
+          <div className="alertsSummary">{summaryText}</div>
           {alerts.length ? (
             <div className="alertsList">
               {alerts.map((alert) => (
@@ -129,7 +152,10 @@ export function AlertsBell() {
                   <div className="alertBody">
                     <div className="alertTitleRow">
                       <strong>{alert.symbol}</strong>
-                      <span className={`severityBadge ${severityClass(alert.severity)}`}>{alert.severity}</span>
+                      <div className="toolbarGroup">
+                        {alert.is_stale ? <span className="severityBadge stale">stale</span> : null}
+                        <span className={`severityBadge ${severityClass(alert.severity)}`}>{alert.severity}</span>
+                      </div>
                     </div>
                     <p>{alert.message}</p>
                     <small>{formatDateTime(alert.detected_at)}</small>

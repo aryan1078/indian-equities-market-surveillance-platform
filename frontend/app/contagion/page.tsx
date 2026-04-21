@@ -1,3 +1,4 @@
+import { ExplainerCards } from "../../components/explainer-cards";
 import { StatCard } from "../../components/stat-card";
 import { ContagionNetwork } from "../../components/contagion-network";
 import { IntensityBars } from "../../components/intensity-bars";
@@ -70,6 +71,43 @@ export default async function ContagionPage() {
           <StatCard label="Window" value="5 min" hint="Sector peer horizon" tone="accent" />
         </div>
       </section>
+
+      <ExplainerCards
+        eyebrow="Reading guide"
+        title="How contagion is defined here"
+        meta="Propagation terms"
+        footerHref="/methodology"
+        footerLabel="Open contagion methodology"
+        items={[
+          {
+            title: "Trigger",
+            value: "Anomalous stock",
+            description:
+              "A contagion window only opens when a stock is already anomalous and belongs to a valid peer sector.",
+            tone: "accent",
+          },
+          {
+            title: "Observation window",
+            value: "5 minutes",
+            description:
+              "Peers must confirm inside the configured five-minute horizon. This prevents one trigger from generating an unbounded alert storm.",
+            tone: "warning",
+          },
+          {
+            title: "Affected peers",
+            value: "Same sector",
+            description:
+              "Only anomalous peers in the same sector count toward spread. Cross-market graph contagion is intentionally out of scope for v1.",
+          },
+          {
+            title: "Risk score",
+            value: "Trigger + peers + spread",
+            description:
+              "Risk grows with the trigger score, the peers’ average anomaly intensity, and the number of confirmed peers.",
+            tone: "critical",
+          },
+        ]}
+      />
 
       <section className="contentGrid twoUp">
         <article className="surface">

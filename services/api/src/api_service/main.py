@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -339,21 +340,126 @@ def _latest_anomaly_map() -> dict[str, dict[str, Any]]:
     return _cached("latest:anomaly", 15.0, _load_latest_anomaly_map)
 
 
-def _open_alert_count() -> int:
-    def _loader() -> int:
+def _coerce_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if "T" in text:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    return date.fromisoformat(text)
+
+
+def _latest_active_trading_date() -> date | None:
+    def _loader() -> date | None:
+        latest_dates = [
+            trading_date
+            for record in _latest_market_map().values()
+            if (trading_date := _record_trading_date(record)) is not None
+        ]
+        if latest_dates:
+            return max(latest_dates)
+
+        anomaly_dates = [
+            trading_date
+            for record in _latest_anomaly_map().values()
+            if (trading_date := _record_trading_date(record)) is not None
+        ]
+        if anomaly_dates:
+            return max(anomaly_dates)
+
         with pg_connection() as conn:
-            row = conn.execute("SELECT COUNT(*) AS row_count FROM operational.alert_events WHERE status = 'open'").fetchone()
-        return int(row["row_count"]) if row else 0
+            row = conn.execute(
+                """
+                SELECT COALESCE(
+                    (SELECT MAX(trading_date) FROM operational.stock_daily_bars),
+                    (SELECT MAX(trading_date) FROM operational.alert_events),
+                    (SELECT MAX(trading_date) FROM operational.contagion_events)
+                ) AS latest_trading_date
+                """
+            ).fetchone()
+        return row["latest_trading_date"] if row else None
 
-    return _cached("alerts:open_count", 15.0, _loader)
+    return _cached("market:latest_trading_date", 15.0, _loader)
 
 
-def _recent_alerts(limit: int = 20, status: str | None = "open") -> list[dict[str, Any]]:
-    cache_key = f"alerts:recent:{status or 'all'}:{limit}"
+def _resolve_alert_scope(counts_by_date: dict[date, int], current_trading_date: date | None) -> dict[str, Any]:
+    reference_date = current_trading_date or (max(counts_by_date) if counts_by_date else None)
+    stale_dates = sorted(
+        [trading_date for trading_date in counts_by_date if reference_date and trading_date != reference_date],
+        reverse=True,
+    )
+    return {
+        "current_trading_date": reference_date,
+        "current_open_count": counts_by_date.get(reference_date, 0) if reference_date else 0,
+        "stale_open_count": sum(counts_by_date[trading_date] for trading_date in stale_dates),
+        "total_open_count": sum(counts_by_date.values()),
+        "latest_stale_alert_date": stale_dates[0] if stale_dates else None,
+    }
+
+
+def _load_alert_scope_snapshot() -> dict[str, Any]:
+    with pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT trading_date, COUNT(*) AS row_count
+            FROM operational.alert_events
+            WHERE status = 'open'
+            GROUP BY trading_date
+            ORDER BY trading_date DESC
+            """
+        ).fetchall()
+    counts_by_date = {
+        row["trading_date"]: int(row["row_count"])
+        for row in rows
+        if row["trading_date"] is not None
+    }
+    return _resolve_alert_scope(counts_by_date, _latest_active_trading_date())
+
+
+def _alert_scope_snapshot() -> dict[str, Any]:
+    return _cached("alerts:scope", 15.0, _load_alert_scope_snapshot)
+
+
+def _annotate_alert_rows(rows: list[dict[str, Any]], reference_date: date | None = None) -> list[dict[str, Any]]:
+    current_trading_date = reference_date if reference_date is not None else _alert_scope_snapshot()["current_trading_date"]
+    annotated: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        alert_trading_date = _coerce_date(item.get("trading_date"))
+        item["is_stale"] = bool(current_trading_date and alert_trading_date and alert_trading_date != current_trading_date)
+        annotated.append(item)
+    return annotated
+
+
+def _open_alert_count() -> int:
+    return int(_alert_scope_snapshot()["current_open_count"])
+
+
+def _recent_alerts(limit: int = 20, status: str | None = "open", scope: str = "all") -> list[dict[str, Any]]:
+    cache_key = f"alerts:recent:{status or 'all'}:{scope}:{limit}"
 
     def _loader() -> list[dict[str, Any]]:
-        clause = "WHERE status = %s" if status else ""
-        params: tuple[Any, ...] = (status, limit) if status else (limit,)
+        params: list[Any] = []
+        clauses: list[str] = []
+        reference_date = _alert_scope_snapshot()["current_trading_date"]
+
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if scope == "current" and reference_date is not None:
+            clauses.append("trading_date = %s")
+            params.append(reference_date)
+        elif scope == "stale":
+            if reference_date is None:
+                return []
+            clauses.append("trading_date <> %s")
+            params.append(reference_date)
+
+        clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with pg_connection() as conn:
             rows = conn.execute(
                 f"""
@@ -364,9 +470,9 @@ def _recent_alerts(limit: int = 20, status: str | None = "open") -> list[dict[st
                 ORDER BY detected_at DESC
                 LIMIT %s
                 """,
-                params,
+                tuple([*params, limit]),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return _annotate_alert_rows([dict(row) for row in rows], reference_date)
 
     return _cached(cache_key, 15.0, _loader)
 
@@ -683,7 +789,7 @@ def _peer_comparison(symbol: str, sector: str | None, days: int, limit: int = 6)
 
     latest_market = _latest_market_map()
     latest_anomalies = _latest_anomaly_map()
-    open_alerts = {item["symbol"]: item for item in _recent_alerts(limit=500, status="open")}
+    open_alerts = {item["symbol"]: item for item in _recent_alerts(limit=500, status="open", scope="current")}
     severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     profiles.sort(
         key=lambda profile: (
@@ -872,10 +978,129 @@ def system_scale() -> dict[str, Any]:
     return _system_scale_snapshot(profiles=profiles, history_map=history_map)
 
 
+@app.get("/api/methodology")
+def methodology() -> dict[str, Any]:
+    settings = get_settings()
+    ewma_half_life_alpha = 1 - math.exp(math.log(0.5) / max(settings.anomaly_warmup_minutes, 1))
+    return {
+        "market": {
+            "timezone": settings.market_timezone,
+            "session_open": settings.market_open_ist,
+            "session_close": settings.market_close_ist,
+            "session_minutes": SESSION_MINUTES_PER_DAY,
+            "scope": "Indian equities, IST market calendar, minute bars as the operational grain.",
+        },
+        "anomaly": {
+            "warmup_minutes": settings.anomaly_warmup_minutes,
+            "ewma_alpha": round(ewma_half_life_alpha, 6),
+            "price_z_threshold": settings.anomaly_price_z_threshold,
+            "volume_z_threshold": settings.anomaly_volume_z_threshold,
+            "composite_threshold": settings.anomaly_composite_threshold,
+            "composite_weights": {"price_z": 0.6, "volume_z": 0.4},
+            "threshold_rationale": (
+                "The current thresholds are tuned to surface enough activity for replay and classroom demos. "
+                "They are intentionally more sensitive than a hardened production calibration, which would be "
+                "tightened using backtesting by sector, liquidity bucket, and false-positive cost."
+            ),
+            "formulas": [
+                {
+                    "name": "Return percentage",
+                    "formula": "((close_t - close_(t-1)) / close_(t-1)) * 100",
+                    "meaning": "One-minute price move expressed as a percentage.",
+                },
+                {
+                    "name": "EWMA alpha",
+                    "formula": "1 - exp(log(0.5) / warmup_minutes)",
+                    "meaning": "Converts the warmup horizon into the decay factor used by the streaming mean and variance.",
+                },
+                {
+                    "name": "EWMA mean",
+                    "formula": "alpha * x_t + (1 - alpha) * mean_(t-1)",
+                    "meaning": "Recent observations matter more than older ones, but history is never discarded completely.",
+                },
+                {
+                    "name": "EWMA variance",
+                    "formula": "alpha * (x_t - mean_t)^2 + (1 - alpha) * variance_(t-1)",
+                    "meaning": "Streaming dispersion estimate used to normalize price and volume moves.",
+                },
+                {
+                    "name": "Price z-score",
+                    "formula": "(return_pct - ewma_return_mean) / sqrt(ewma_return_variance)",
+                    "meaning": "How unusual the latest one-minute return is relative to the recent return distribution.",
+                },
+                {
+                    "name": "Volume z-score",
+                    "formula": "(volume_t - ewma_volume_mean) / sqrt(ewma_volume_variance)",
+                    "meaning": "How unusual the latest volume print is relative to the recent volume distribution.",
+                },
+                {
+                    "name": "Composite score",
+                    "formula": "0.6 * |price_z| + 0.4 * |volume_z|",
+                    "meaning": "Weighted blend used to rank signals when price and volume both matter.",
+                },
+            ],
+            "flag_rule": (
+                "A point is flagged when |price z| crosses the price threshold, or |volume z| crosses the volume "
+                "threshold, or the weighted composite score crosses the composite threshold."
+            ),
+            "severity_bands": [
+                {
+                    "severity": "low",
+                    "rule": "Any persisted anomaly alert below the medium band.",
+                },
+                {
+                    "severity": "medium",
+                    "rule": "Composite >= 2.2 or volume z >= 2.0.",
+                },
+                {
+                    "severity": "high",
+                    "rule": "Composite >= 2.6 or price z >= 2.4.",
+                },
+                {
+                    "severity": "critical",
+                    "rule": "Composite >= 3.0, or price z >= 2.6 together with volume z >= 2.2.",
+                },
+            ],
+        },
+        "alerts": {
+            "cooldown_minutes": settings.alert_cooldown_minutes,
+            "notification_min_severity": settings.alert_notify_min_severity,
+            "logic": (
+                "Alerts are persisted operator events. Anomaly alerts are deduplicated to one event per rounded minute "
+                "and then throttled with a cooldown so the queue stays usable during noisy bursts."
+            ),
+        },
+        "contagion": {
+            "window_minutes": settings.contagion_window_minutes,
+            "trigger_rule": "A new contagion window opens only when a symbol is anomalous and belongs to a valid sector peer set.",
+            "peer_rule": "Peers contribute only if they are anomalous, belong to the same sector, and arrive before the window closes.",
+            "risk_score_formula": "trigger_composite_score + peer_average_score + 0.35 * affected_count",
+            "why": (
+                "This keeps v1 explainable: one trigger stock, a bounded five-minute sector window, and a risk score "
+                "that increases with both peer intensity and peer count."
+            ),
+        },
+        "warehouse": {
+            "facts": [
+                "fact_anomaly_minute for minute-grain surveillance metrics",
+                "fact_market_day for daily stock summaries",
+                "fact_contagion_event for persisted propagation windows",
+                "fact_surveillance_coverage as a factless monitoring ledger",
+            ],
+            "why": (
+                "Warehouse facts are separated by grain so OLAP questions stay defensible. Minute analytics, daily "
+                "summaries, contagion windows, and monitoring coverage are modeled separately instead of being mixed "
+                "into one ambiguous fact table."
+            ),
+        },
+    }
+
+
 @app.get("/api/overview")
 def overview() -> dict[str, Any]:
     profiles = _profiles()
     history_map = _history_coverage_map()
+    alert_scope = _alert_scope_snapshot()
     latest_market = sorted(_latest_market_map().values(), key=lambda item: (item["sector"], item["symbol"]))
     latest_anomalies = [item for item in _latest_anomaly_map().values() if item.get("is_anomalous")]
     sector_scores: dict[str, list[float]] = defaultdict(list)
@@ -889,7 +1114,7 @@ def overview() -> dict[str, Any]:
         }
         for sector, scores in sorted(sector_scores.items())
     ]
-    alerts = _recent_alerts(limit=8, status="open")
+    alerts = _recent_alerts(limit=8, status="open", scope="current")
     with pg_connection() as conn:
         contagion = conn.execute(
             """
@@ -911,7 +1136,11 @@ def overview() -> dict[str, Any]:
         "sector_heatmap": sector_heatmap,
         "recent_contagion_events": [dict(row) for row in contagion],
         "recent_alerts": alerts,
-        "open_alert_count": _open_alert_count(),
+        "open_alert_count": alert_scope["current_open_count"],
+        "total_open_alert_count": alert_scope["total_open_count"],
+        "stale_open_alert_count": alert_scope["stale_open_count"],
+        "current_alert_trading_date": str(alert_scope["current_trading_date"]) if alert_scope["current_trading_date"] else None,
+        "latest_stale_alert_date": str(alert_scope["latest_stale_alert_date"]) if alert_scope["latest_stale_alert_date"] else None,
         "tracked_symbol_count": len(profiles),
         "tracked_sector_count": len({item["sector"] for item in profiles.values() if item.get("sector")}),
         "hydrated_symbol_count": len(history_map),
@@ -1024,8 +1253,27 @@ def reference_search(q: str = Query(..., min_length=1), limit: int = Query(12, g
 
 @app.get("/api/alerts/live")
 def alerts_live(limit: int = Query(20, ge=1, le=100), status: str | None = Query("open")) -> dict[str, Any]:
-    alerts = _recent_alerts(limit=limit, status=status)
-    return {"items": alerts, "open_count": _open_alert_count()}
+    alert_scope = _alert_scope_snapshot()
+    display_scope = "all"
+    scope_reference_date = alert_scope["current_trading_date"]
+    if status == "open":
+        alerts = _recent_alerts(limit=limit, status=status, scope="current")
+        display_scope = "current"
+        if not alerts and alert_scope["stale_open_count"]:
+            alerts = _recent_alerts(limit=limit, status=status, scope="stale")
+            display_scope = "stale"
+            scope_reference_date = alert_scope["latest_stale_alert_date"]
+    else:
+        alerts = _recent_alerts(limit=limit, status=status, scope="all")
+    return {
+        "items": alerts,
+        "open_count": alert_scope["total_open_count"],
+        "active_open_count": alert_scope["current_open_count"],
+        "stale_open_count": alert_scope["stale_open_count"],
+        "display_scope": display_scope,
+        "current_trading_date": str(alert_scope["current_trading_date"]) if alert_scope["current_trading_date"] else None,
+        "scope_reference_date": str(scope_reference_date) if scope_reference_date else None,
+    }
 
 
 @app.post("/api/alerts/{event_id}/ack")
@@ -1058,7 +1306,7 @@ def stock_screener(
     history_map = _history_coverage_map()
     latest_market = _latest_market_map()
     latest_anomalies = _latest_anomaly_map()
-    alert_rows = _recent_alerts(limit=500, status="open")
+    alert_rows = _recent_alerts(limit=500, status="open", scope="current")
     latest_alerts = {}
     for alert in alert_rows:
         latest_alerts.setdefault(alert["symbol"], alert)
@@ -1134,7 +1382,7 @@ def stock_workspace(symbol: str, days: int = Query(45, ge=20, le=180)) -> dict[s
     with pg_connection() as conn:
         alerts = conn.execute(
             """
-            SELECT event_id, symbol, event_category, severity, status, title, message,
+            SELECT event_id, symbol, trading_date, event_category, severity, status, title, message,
                    detected_at, composite_score, event_payload, acknowledged_at
             FROM operational.alert_events
             WHERE symbol = %s
@@ -1144,7 +1392,7 @@ def stock_workspace(symbol: str, days: int = Query(45, ge=20, le=180)) -> dict[s
             (resolved_symbol,),
         ).fetchall()
 
-    alert_items = [dict(row) for row in alerts]
+    alert_items = _annotate_alert_rows([dict(row) for row in alerts])
     latest_anomaly = _latest_anomaly_map().get(resolved_symbol)
     history_summary = _history_summary(daily_rows)
     anomaly_summary = _anomaly_summary(anomalies)
