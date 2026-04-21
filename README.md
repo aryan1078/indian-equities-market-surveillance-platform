@@ -25,6 +25,12 @@ Distributed market surveillance and cross-asset contagion detection system for I
 4. Start the stack with `docker compose up --build`.
 5. Open the API at `http://localhost:8000/docs` and the frontend at `http://localhost:3000`.
 
+## Public Access
+
+- The frontend is configured to proxy browser `/api/*` requests through Next.js, so one public URL can front both the UI and API.
+- For local Docker runs, the frontend proxies to `http://api:8000`.
+- For non-Docker local runs, set `API_PROXY_TARGET=http://localhost:8000` and leave `NEXT_PUBLIC_API_BASE_URL` empty so browser requests stay same-origin.
+
 ## Service Commands
 
 - Collector backfill:

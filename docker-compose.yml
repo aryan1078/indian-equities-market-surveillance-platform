@@ -189,7 +189,8 @@ services:
       - .env
     environment:
       API_BASE_URL: http://api:8000
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      API_PROXY_TARGET: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: ""
     command: ["start-frontend-dev.sh"]
     volumes:
       - ./frontend:/app/frontend

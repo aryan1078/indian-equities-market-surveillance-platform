@@ -5,8 +5,7 @@ const SERVER_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   "http://localhost:8000";
 
-const BROWSER_API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const BROWSER_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 export function apiBaseUrl() {
   return typeof window === "undefined" ? SERVER_API_BASE_URL : BROWSER_API_BASE_URL;
