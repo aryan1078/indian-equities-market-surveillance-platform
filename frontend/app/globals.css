@@ -545,6 +545,21 @@ td {
   font-size: 0.88rem;
 }
 
+.tapeFreshness {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.tapeFreshnessLabel {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tapeFreshnessMeta {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .alertRow,
 .alertCard,
 .metricRow,

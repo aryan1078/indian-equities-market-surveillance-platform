@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useDeferredValue, useMemo, useState } from "react";
 
 import type { LatestMarket, StockReference } from "../lib/api";
-import { formatCompactIndian, formatDate, formatNumber, formatTime } from "../lib/format";
+import { formatCompactIndian, formatDate, formatDateTime, formatNumber, formatTime } from "../lib/format";
 
 type LiveTapePanelProps = {
   items: LatestMarket[];
@@ -15,6 +15,14 @@ const DEFAULT_LIMIT = "25";
 
 function numeric(value: number | null | undefined, fallback = -9999) {
   return value === null || value === undefined || Number.isNaN(value) ? fallback : value;
+}
+
+function timestampMs(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
@@ -38,6 +46,37 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
       }
     }
     return [...values].sort((left, right) => left.localeCompare(right));
+  }, [items]);
+
+  const snapshot = useMemo(() => {
+    const counts = new Map<string, number>();
+    let latestLabel: string | null = null;
+    let latestMs: number | null = null;
+
+    for (const item of items) {
+      const label = item.timestamp_ist;
+      if (!label) {
+        continue;
+      }
+      const parsedMs = timestampMs(label);
+      if (parsedMs === null) {
+        continue;
+      }
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+      if (latestMs === null || parsedMs > latestMs) {
+        latestMs = parsedMs;
+        latestLabel = label;
+      }
+    }
+
+    const alignedCount = latestLabel ? (counts.get(latestLabel) ?? 0) : 0;
+    return {
+      latestLabel,
+      latestMs,
+      uniqueCount: counts.size,
+      alignedCount,
+      laggingCount: Math.max(items.length - alignedCount, 0),
+    };
   }, [items]);
 
   const filtered = useMemo(() => {
@@ -92,6 +131,7 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
   const latestTradingDate = filtered[0]?.trading_date ?? items[0]?.trading_date;
   const strongestSymbol = filtered[0]?.symbol ?? "N/A";
   const hasFilters = Boolean(query.trim()) || sector !== "all" || status !== "all" || sort !== "priority" || limit !== DEFAULT_LIMIT;
+  const snapshotIsUniform = snapshot.uniqueCount <= 1;
   const activeSummary = [
     deferredQuery ? `matching "${query.trim()}"` : "across the live universe",
     sector !== "all" ? sector : `${sectors.length || 0} sectors`,
@@ -99,6 +139,34 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
     sort === "score" ? "sorted by score" : sort === "volume" ? "sorted by volume" : sort === "symbol" ? "sorted alphabetically" : "priority sorted",
     limit === "all" ? "full list" : `top ${limit}`,
   ].join(" | ");
+
+  function renderFreshness(item: LatestMarket) {
+    const rowMs = timestampMs(item.timestamp_ist);
+    if (rowMs === null || snapshot.latestMs === null) {
+      return (
+        <div className="tapeFreshness">
+          <span className="tapeFreshnessLabel">N/A</span>
+        </div>
+      );
+    }
+
+    const lagMinutes = Math.max(Math.round((snapshot.latestMs - rowMs) / 60_000), 0);
+    if (lagMinutes === 0) {
+      return (
+        <div className="tapeFreshness">
+          <span className="tapeFreshnessLabel">Latest</span>
+          {!snapshotIsUniform ? <span className="tapeFreshnessMeta">{formatTime(item.timestamp_ist)}</span> : null}
+        </div>
+      );
+    }
+
+    return (
+      <div className="tapeFreshness">
+        <span className="tapeFreshnessLabel">{lagMinutes}m behind</span>
+        <span className="tapeFreshnessMeta">{formatTime(item.timestamp_ist)}</span>
+      </div>
+    );
+  }
 
   function resetFilters() {
     setQuery("");
@@ -205,10 +273,19 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
         <span>{filtered.length} matched</span>
         <span>{flaggedVisible} flagged</span>
         <span>{latestTradingDate ? formatDate(latestTradingDate) : "No trading date"}</span>
+        <span>{snapshot.latestLabel ? `Snapshot ${formatTime(snapshot.latestLabel)}` : "No snapshot minute"}</span>
         <span>Lead symbol {strongestSymbol}</span>
       </div>
 
       <div className="resultSummary">{activeSummary}</div>
+
+      {snapshot.latestLabel ? (
+        <div className="statusNote">
+          {snapshotIsUniform
+            ? `This tape is a synchronized market snapshot. All ${items.length.toLocaleString("en-IN")} rows are showing the same last available minute, ${formatDateTime(snapshot.latestLabel)}.`
+            : `This tape is a synchronized market snapshot anchored to ${formatDateTime(snapshot.latestLabel)}. ${snapshot.alignedCount.toLocaleString("en-IN")} symbols are on the latest minute and ${snapshot.laggingCount.toLocaleString("en-IN")} are behind it.`}
+        </div>
+      ) : null}
 
       {visible.length ? (
         <div className="tableWrap tableWrapScrollY">
@@ -222,7 +299,7 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
                 <th>Score</th>
                 <th>Status</th>
                 <th>Volume</th>
-                <th>Time</th>
+                <th>{snapshotIsUniform ? "Freshness" : "Bar time"}</th>
               </tr>
             </thead>
             <tbody>
@@ -243,7 +320,7 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
                     </span>
                   </td>
                   <td>{formatCompactIndian(item.volume, 1)}</td>
-                  <td>{formatTime(item.timestamp_ist)}</td>
+                  <td>{renderFreshness(item)}</td>
                 </tr>
               ))}
             </tbody>
