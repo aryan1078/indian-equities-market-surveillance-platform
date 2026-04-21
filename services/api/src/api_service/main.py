@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from time import monotonic
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -12,10 +16,61 @@ from market_surveillance.analytics import compute_daily_indicators
 from market_surveillance.db import get_cassandra_session, get_redis, pg_connection
 from market_surveillance.history import candidate_symbols, ensure_daily_history, sync_metadata_profiles
 from market_surveillance.market_time import as_market_time, ensure_utc
-from market_surveillance.metadata import load_stock_references
+from market_surveillance.metadata import load_stock_references, valid_peer_sector
 from market_surveillance.settings import get_settings
 
-app = FastAPI(title="Market Surveillance API", version="0.2.0")
+SESSION_MINUTES_PER_DAY = 375
+TRADING_DAYS_PER_YEAR = 250
+CACHE_MISS = object()
+
+
+@dataclass
+class CacheEntry:
+    expires_at: float
+    value: Any
+
+
+_API_CACHE: dict[str, CacheEntry] = {}
+
+
+def _cache_read(key: str) -> Any:
+    entry = _API_CACHE.get(key)
+    if entry is None:
+        return CACHE_MISS
+    if entry.expires_at <= monotonic():
+        _API_CACHE.pop(key, None)
+        return CACHE_MISS
+    return entry.value
+
+
+def _cache_store(key: str, ttl_seconds: float, value: Any) -> Any:
+    _API_CACHE[key] = CacheEntry(expires_at=monotonic() + ttl_seconds, value=value)
+    return value
+
+
+def _cached(key: str, ttl_seconds: float, loader: Callable[[], Any]) -> Any:
+    cached_value = _cache_read(key)
+    if cached_value is not CACHE_MISS:
+        return cached_value
+    return _cache_store(key, ttl_seconds, loader())
+
+
+def _clear_api_cache(prefix: str | None = None) -> None:
+    if prefix is None:
+        _API_CACHE.clear()
+        return
+    for key in [cache_key for cache_key in _API_CACHE if cache_key.startswith(prefix)]:
+        _API_CACHE.pop(key, None)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    sync_metadata_profiles()
+    _clear_api_cache()
+    yield
+
+
+app = FastAPI(title="Market Surveillance API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,9 +78,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-SESSION_MINUTES_PER_DAY = 375
-TRADING_DAYS_PER_YEAR = 250
 
 
 def redis_json_values(pattern: str) -> list[dict[str, Any]]:
@@ -74,7 +126,7 @@ def _streaming_counts_from_bulk_runs(rows: list[dict[str, Any]]) -> dict[str, in
     return {"market_ticks": tick_rows, "anomaly_metrics": anomaly_rows}
 
 
-def _profiles() -> dict[str, dict[str, Any]]:
+def _load_profiles() -> dict[str, dict[str, Any]]:
     records = {stock.symbol: stock.model_dump() for stock in load_stock_references()}
     with pg_connection() as conn:
         rows = conn.execute(
@@ -100,7 +152,11 @@ def _profiles() -> dict[str, dict[str, Any]]:
     return records
 
 
-def _history_coverage_map() -> dict[str, dict[str, Any]]:
+def _profiles() -> dict[str, dict[str, Any]]:
+    return _cached("profiles", 300.0, _load_profiles)
+
+
+def _load_history_coverage_map() -> dict[str, dict[str, Any]]:
     with pg_connection() as conn:
         rows = conn.execute(
             """
@@ -110,6 +166,10 @@ def _history_coverage_map() -> dict[str, dict[str, Any]]:
             """
         ).fetchall()
     return {row["symbol"]: {"daily_bar_count": int(row["daily_bar_count"]), "last_daily_date": row["last_daily_date"]} for row in rows}
+
+
+def _history_coverage_map() -> dict[str, dict[str, Any]]:
+    return _cached("history:coverage", 180.0, _load_history_coverage_map)
 
 
 def _search_rank(query: str, record: dict[str, Any]) -> int:
@@ -135,7 +195,7 @@ def _search_rank(query: str, record: dict[str, Any]) -> int:
     return 0
 
 
-def _latest_market_map() -> dict[str, dict[str, Any]]:
+def _load_latest_market_map() -> dict[str, dict[str, Any]]:
     profiles = _profiles()
     session = get_cassandra_session()
     rows = session.execute(
@@ -169,7 +229,11 @@ def _latest_market_map() -> dict[str, dict[str, Any]]:
     return records
 
 
-def _latest_anomaly_map() -> dict[str, dict[str, Any]]:
+def _latest_market_map() -> dict[str, dict[str, Any]]:
+    return _cached("latest:market", 15.0, _load_latest_market_map)
+
+
+def _load_latest_anomaly_map() -> dict[str, dict[str, Any]]:
     latest_market = _latest_market_map()
     if not latest_market:
         return {}
@@ -216,28 +280,40 @@ def _latest_anomaly_map() -> dict[str, dict[str, Any]]:
     return records
 
 
+def _latest_anomaly_map() -> dict[str, dict[str, Any]]:
+    return _cached("latest:anomaly", 15.0, _load_latest_anomaly_map)
+
+
 def _open_alert_count() -> int:
-    with pg_connection() as conn:
-        row = conn.execute("SELECT COUNT(*) AS row_count FROM operational.alert_events WHERE status = 'open'").fetchone()
-    return int(row["row_count"]) if row else 0
+    def _loader() -> int:
+        with pg_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS row_count FROM operational.alert_events WHERE status = 'open'").fetchone()
+        return int(row["row_count"]) if row else 0
+
+    return _cached("alerts:open_count", 15.0, _loader)
 
 
 def _recent_alerts(limit: int = 20, status: str | None = "open") -> list[dict[str, Any]]:
-    clause = "WHERE status = %s" if status else ""
-    params: tuple[Any, ...] = (status, limit) if status else (limit,)
-    with pg_connection() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT event_id, symbol, trading_date, event_category, severity, status, title, message,
-                   detected_at, composite_score, price_z_score, volume_z_score, event_payload, acknowledged_at
-            FROM operational.alert_events
-            {clause}
-            ORDER BY detected_at DESC
-            LIMIT %s
-            """,
-            params,
-        ).fetchall()
-    return [dict(row) for row in rows]
+    cache_key = f"alerts:recent:{status or 'all'}:{limit}"
+
+    def _loader() -> list[dict[str, Any]]:
+        clause = "WHERE status = %s" if status else ""
+        params: tuple[Any, ...] = (status, limit) if status else (limit,)
+        with pg_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT event_id, symbol, trading_date, event_category, severity, status, title, message,
+                       detected_at, composite_score, price_z_score, volume_z_score, event_payload, acknowledged_at
+                FROM operational.alert_events
+                {clause}
+                ORDER BY detected_at DESC
+                LIMIT %s
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    return _cached(cache_key, 15.0, _loader)
 
 
 def _latest_run(mode: str | None = None) -> dict[str, Any] | None:
@@ -295,6 +371,9 @@ def _system_scale_snapshot(
     profiles: dict[str, dict[str, Any]] | None = None,
     history_map: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if profiles is None and history_map is None:
+        return _cached("system:scale", 15.0, lambda: _system_scale_snapshot(_profiles(), _history_coverage_map()))
+
     profiles = profiles or _profiles()
     history_map = history_map or _history_coverage_map()
     with pg_connection() as conn:
@@ -319,24 +398,30 @@ def _system_scale_snapshot(
             FROM operational.stock_daily_bars
             """
         ).fetchone()
-        completed_ingestion_runs = [
+        active_ingestion_runs = [
             dict(row)
             for row in conn.execute(
                 """
-                SELECT mode, records_published, notes
+                SELECT status, mode, records_published, notes
                 FROM operational.ingestion_runs
-                WHERE status = 'completed'
+                WHERE status IN ('completed', 'running')
                 ORDER BY started_at ASC
                 """
             ).fetchall()
         ]
+        completed_ingestion_runs = [row for row in active_ingestion_runs if row["status"] == "completed"]
 
     session = get_cassandra_session()
-    bulk_streaming_counts = _streaming_counts_from_bulk_runs(completed_ingestion_runs)
+    bulk_streaming_counts = _streaming_counts_from_bulk_runs(active_ingestion_runs)
+    completed_bulk_counts = _streaming_counts_from_bulk_runs(completed_ingestion_runs)
     streaming_counts: dict[str, int | None] = {
         "market_ticks": bulk_streaming_counts["market_ticks"] or None,
         "anomaly_metrics": bulk_streaming_counts["anomaly_metrics"] or None,
         "latest_market_state": len(_latest_market_map()),
+        "inflight_market_ticks": max(bulk_streaming_counts["market_ticks"] - completed_bulk_counts["market_ticks"], 0),
+        "inflight_anomaly_metrics": max(
+            bulk_streaming_counts["anomaly_metrics"] - completed_bulk_counts["anomaly_metrics"], 0
+        ),
     }
     for key, table_name in {
         "market_ticks": "market_ticks",
@@ -372,7 +457,11 @@ def _system_scale_snapshot(
     }
     operational_total_rows = sum(operational_counts.values())
     warehouse_total_rows = sum(warehouse_counts.values())
-    streaming_total_rows = sum(value for key, value in streaming_counts.items() if key != "redis_keys" and value is not None)
+    streaming_total_rows = sum(
+        value
+        for key, value in streaming_counts.items()
+        if key not in {"redis_keys", "inflight_market_ticks", "inflight_anomaly_metrics"} and value is not None
+    )
     materialized_total_rows = operational_total_rows + warehouse_total_rows + streaming_total_rows
     trading_days_loaded = int(coverage_window["trading_days_loaded"] or 0)
 
@@ -403,19 +492,23 @@ def _system_scale_snapshot(
 
 
 def _daily_rows(symbol: str, days: int) -> list[dict[str, Any]]:
-    with pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT symbol, trading_date, open, high, low, close, adj_close, volume, dividends, stock_splits
-            FROM operational.stock_daily_bars
-            WHERE symbol = %s
-            ORDER BY trading_date DESC
-            LIMIT %s
-            """,
-            (symbol, max(days, 1)),
-        ).fetchall()
-    ordered = list(reversed([dict(row) for row in rows]))
-    return ordered
+    cache_key = f"history:daily:{symbol}:{max(days, 1)}"
+
+    def _loader() -> list[dict[str, Any]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT symbol, trading_date, open, high, low, close, adj_close, volume, dividends, stock_splits
+                FROM operational.stock_daily_bars
+                WHERE symbol = %s
+                ORDER BY trading_date DESC
+                LIMIT %s
+                """,
+                (symbol, max(days, 1)),
+            ).fetchall()
+        return list(reversed([dict(row) for row in rows]))
+
+    return _cached(cache_key, 120.0, _loader)
 
 
 def _window_return(rows: list[dict[str, Any]], sessions: int) -> float | None:
@@ -516,7 +609,7 @@ def _alert_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _peer_comparison(symbol: str, sector: str | None, days: int, limit: int = 6) -> list[dict[str, Any]]:
-    if not sector:
+    if not valid_peer_sector(sector):
         return []
 
     profiles = [item for item in _profiles().values() if item.get("sector") == sector and item["symbol"] != symbol]
@@ -527,6 +620,16 @@ def _peer_comparison(symbol: str, sector: str | None, days: int, limit: int = 6)
     latest_anomalies = _latest_anomaly_map()
     open_alerts = {item["symbol"]: item for item in _recent_alerts(limit=500, status="open")}
     severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    profiles.sort(
+        key=lambda profile: (
+            0 if profile["symbol"] in open_alerts else 1,
+            0 if profile["symbol"] in latest_anomalies else 1,
+            0 if profile["symbol"] in latest_market else 1,
+            0 if profile.get("watchlist") else 1,
+            profile["symbol"],
+        )
+    )
+    profiles = profiles[: max(limit * 4, 24)]
 
     peers: list[dict[str, Any]] = []
     for profile in profiles:
@@ -561,6 +664,20 @@ def _peer_comparison(symbol: str, sector: str | None, days: int, limit: int = 6)
         )
     )
     return peers[:limit]
+
+
+def _resolve_workspace_symbol(
+    symbol_input: str,
+    days: int,
+    profiles: dict[str, dict[str, Any]],
+    history_map: dict[str, dict[str, Any]],
+) -> str | None:
+    minimum_days = max(days, 1)
+    for candidate in candidate_symbols(symbol_input):
+        coverage = history_map.get(candidate)
+        if candidate in profiles and coverage and int(coverage.get("daily_bar_count") or 0) >= minimum_days:
+            return candidate
+    return None
 
 
 def _related_contagion(symbol: str, sector: str | None, limit: int = 10) -> list[dict[str, Any]]:
@@ -630,11 +747,6 @@ def _screener_row(profile: dict[str, Any], daily_rows: list[dict[str, Any]], lat
         "latest_anomaly": latest_anomaly,
         "latest_alert": latest_alert,
     }
-
-
-@app.on_event("startup")
-def _startup_sync() -> None:
-    sync_metadata_profiles()
 
 
 @app.get("/api/system/health")
@@ -827,9 +939,7 @@ def reference_search(q: str = Query(..., min_length=1), limit: int = Query(12, g
 @app.get("/api/alerts/live")
 def alerts_live(limit: int = Query(20, ge=1, le=100), status: str | None = Query("open")) -> dict[str, Any]:
     alerts = _recent_alerts(limit=limit, status=status)
-    with pg_connection() as conn:
-        row = conn.execute("SELECT COUNT(*) AS row_count FROM operational.alert_events WHERE status = 'open'").fetchone()
-    return {"items": alerts, "open_count": row["row_count"]}
+    return {"items": alerts, "open_count": _open_alert_count()}
 
 
 @app.post("/api/alerts/{event_id}/ack")
@@ -847,6 +957,8 @@ def acknowledge_alert(event_id: str) -> dict[str, Any]:
         row = conn.execute("SELECT event_id, status, acknowledged_at FROM operational.alert_events WHERE event_id = %s", (event_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Alert not found")
+    _clear_api_cache("alerts:")
+    _clear_api_cache("system:scale")
     return dict(row)
 
 
@@ -915,11 +1027,19 @@ def stock_screener(
 
 @app.get("/api/stocks/{symbol}/workspace")
 def stock_workspace(symbol: str, days: int = Query(45, ge=20, le=180)) -> dict[str, Any]:
-    resolved_symbol = ensure_daily_history(symbol, minimum_days=days)
+    profiles = _profiles()
+    history_map = _history_coverage_map()
+    resolved_symbol = _resolve_workspace_symbol(symbol, days, profiles, history_map)
+    if not resolved_symbol:
+        resolved_symbol = ensure_daily_history(symbol, minimum_days=days)
+        _clear_api_cache("profiles")
+        _clear_api_cache("history:")
+        _clear_api_cache("system:scale")
+        profiles = _profiles()
+
     if not resolved_symbol:
         raise HTTPException(status_code=404, detail="Unable to resolve symbol")
 
-    profiles = _profiles()
     profile = profiles.get(resolved_symbol, {"symbol": resolved_symbol, "company_name": resolved_symbol})
     daily_rows = _daily_rows(resolved_symbol, days)
     indicators = compute_daily_indicators(daily_rows)

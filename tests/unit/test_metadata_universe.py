@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from market_surveillance.metadata import valid_peer_sector
+from market_surveillance.metadata import infer_sector_from_identity, valid_peer_sector
 
 
 def _sync_module():
@@ -20,6 +20,13 @@ def test_valid_peer_sector_rejects_unknown_groups():
     assert valid_peer_sector("Unknown") is False
     assert valid_peer_sector("unclassified") is False
     assert valid_peer_sector(None) is False
+
+
+def test_infer_sector_from_identity_recognizes_common_nse_patterns():
+    assert infer_sector_from_identity("HDFC Bank Limited", ["HDFCBANK"]) == "Banking"
+    assert infer_sector_from_identity("Tata Consultancy Services Limited", ["TCS"]) == "Information Technology"
+    assert infer_sector_from_identity("Sun Pharmaceutical Industries Limited", ["SUNPHARMA"]) == "Pharmaceuticals"
+    assert infer_sector_from_identity("Adani Ports and Special Economic Zone Limited", ["ADANIPORTS"]) == "Industrials"
 
 
 def test_build_records_preserves_watchlist_and_metadata():
