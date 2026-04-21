@@ -3,19 +3,73 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha1
+from typing import Any
+
+from cassandra.concurrent import execute_concurrent_with_args
 
 from market_surveillance.db import get_cassandra_session, pg_connection
 from market_surveillance.metadata import load_stock_references, sector_lookup, valid_peer_sector
 from market_surveillance.models import AnomalyDetection
+from market_surveillance.settings import get_settings
 
 from .main import ObservationWindow, build_event, flush_expired, write_event
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Recompute contagion events for a trading date")
-    parser.add_argument("--trading-date", required=True)
+    parser.add_argument("--trading-date")
+    parser.add_argument("--start-date")
+    parser.add_argument("--end-date")
+    parser.add_argument("--latest-minute-window", action="store_true")
     parser.add_argument("--source-run-id")
     return parser.parse_args()
+
+
+def _coerce_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    return date.fromisoformat(text)
+
+
+def latest_minute_backfill_window() -> tuple[date, date] | None:
+    with pg_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT notes
+            FROM operational.ingestion_runs
+            WHERE mode = 'minute_backfill'
+              AND status = 'completed'
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    if not row:
+        return None
+    notes = row["notes"] if isinstance(row["notes"], dict) else {}
+    start_date = _coerce_date(notes.get("window_start"))
+    end_date = _coerce_date(notes.get("window_end"))
+    if start_date is None or end_date is None:
+        return None
+    return start_date, end_date
+
+
+def trading_dates_for_window(start_date: date, end_date: date) -> list[date]:
+    with pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT trading_date
+            FROM operational.stock_daily_bars
+            WHERE trading_date BETWEEN %s AND %s
+            ORDER BY trading_date ASC
+            """,
+            (start_date, end_date),
+        ).fetchall()
+    return [row["trading_date"] for row in rows]
 
 
 def load_anomalies(trading_date: date, source_run_id: str | None) -> list[AnomalyDetection]:
@@ -31,8 +85,17 @@ def load_anomalies(trading_date: date, source_run_id: str | None) -> list[Anomal
         """
     )
     rows: list[AnomalyDetection] = []
-    for stock in load_stock_references():
-        for row in session.execute(stmt, (stock.symbol, trading_date)):
+    query_args = [(stock.symbol, trading_date) for stock in load_stock_references()]
+    for success, result in execute_concurrent_with_args(
+        session,
+        stmt,
+        query_args,
+        concurrency=128,
+        raise_on_first_error=True,
+    ):
+        if not success:
+            raise result
+        for row in result:
             if source_run_id and row["source_run_id"] != source_run_id:
                 continue
             normalized = dict(row)
@@ -43,8 +106,13 @@ def load_anomalies(trading_date: date, source_run_id: str | None) -> list[Anomal
     return rows
 
 
-def recompute(trading_date: date, source_run_id: str | None = None) -> None:
+def recompute(trading_date: date, source_run_id: str | None = None) -> int:
+    print(f"[contagion-recompute] starting trading_date={trading_date.isoformat()}", flush=True)
     anomalies = load_anomalies(trading_date, source_run_id)
+    print(
+        f"[contagion-recompute] loaded anomaly detections trading_date={trading_date.isoformat()} rows={len(anomalies)}",
+        flush=True,
+    )
     with pg_connection() as conn:
         conn.execute("DELETE FROM operational.contagion_events WHERE trading_date = %s", (trading_date,))
 
@@ -83,7 +151,7 @@ def recompute(trading_date: date, source_run_id: str | None = None) -> None:
             trigger_symbol=detection.symbol,
             trigger_sector=reference.sector,
             start=detection.timestamp_utc,
-            end=detection.timestamp_utc + timedelta(minutes=5),
+            end=detection.timestamp_utc + timedelta(minutes=get_settings().contagion_window_minutes),
             trigger_score=detection.composite_score,
             source_run_id=detection.source_run_id,
             event_id=sha1(
@@ -92,10 +160,65 @@ def recompute(trading_date: date, source_run_id: str | None = None) -> None:
         )
 
     flush_expired(active_windows, datetime.now(tz=UTC))
+    with pg_connection() as conn:
+        event_count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS row_count FROM operational.contagion_events WHERE trading_date = %s",
+                (trading_date,),
+            ).fetchone()["row_count"]
+        )
+    print(
+        f"[contagion-recompute] completed trading_date={trading_date.isoformat()} events={event_count}",
+        flush=True,
+    )
+    return event_count
+
+
+def recompute_window(start_date: date, end_date: date, source_run_id: str | None = None) -> list[tuple[date, int]]:
+    trading_dates = trading_dates_for_window(start_date, end_date)
+    if not trading_dates:
+        return []
+
+    print(
+        f"[contagion-recompute] starting window start_date={start_date.isoformat()} end_date={end_date.isoformat()} dates={len(trading_dates)}",
+        flush=True,
+    )
+    results: list[tuple[date, int]] = []
+    for index, trading_date in enumerate(trading_dates, start=1):
+        print(
+            f"[contagion-recompute] window progress {index}/{len(trading_dates)} trading_date={trading_date.isoformat()}",
+            flush=True,
+        )
+        results.append((trading_date, recompute(trading_date, source_run_id)))
+    print(
+        f"[contagion-recompute] completed window start_date={start_date.isoformat()} end_date={end_date.isoformat()}",
+        flush=True,
+    )
+    return results
 
 
 def main() -> None:
     args = parse_args()
+    if args.latest_minute_window:
+        latest_window = latest_minute_backfill_window()
+        if latest_window is None:
+            raise SystemExit("No completed minute_backfill window with window_start/window_end metadata was found.")
+        start_date, end_date = latest_window
+        recompute_window(start_date, end_date, args.source_run_id)
+        return
+
+    if args.start_date or args.end_date:
+        if not args.start_date or not args.end_date:
+            raise SystemExit("Both --start-date and --end-date are required for contagion window recompute.")
+        start_date = date.fromisoformat(args.start_date)
+        end_date = date.fromisoformat(args.end_date)
+        if start_date > end_date:
+            raise SystemExit("start-date must be on or before end-date")
+        recompute_window(start_date, end_date, args.source_run_id)
+        return
+
+    if not args.trading_date:
+        raise SystemExit("Provide --trading-date, or use --start-date/--end-date, or --latest-minute-window.")
     recompute(date.fromisoformat(args.trading_date), args.source_run_id)
 
 
