@@ -42,3 +42,9 @@ Distributed market surveillance and cross-asset contagion detection system for I
 - PostgreSQL stores contagion events, ETL metadata, and analytical warehouse facts.
 - Replay mode is a first-class workflow so the demo works outside market hours.
 
+## Contributors
+
+- [aryan1078](https://github.com/aryan1078)
+- [H484811](https://github.com/H484811)
+- [Tathya-25](https://github.com/Tathya-25)
+- [h20250161-sys](https://github.com/h20250161-sys)
