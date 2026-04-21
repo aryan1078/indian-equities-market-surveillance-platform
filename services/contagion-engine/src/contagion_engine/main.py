@@ -30,7 +30,12 @@ class ObservationWindow:
     peer_scores: list[float] = field(default_factory=list)
 
 
-def write_event(event: ContagionEvent) -> None:
+def write_event(
+    event: ContagionEvent,
+    *,
+    update_live_cache: bool = True,
+    emit_alerts: bool = True,
+) -> None:
     with pg_connection() as conn:
         conn.execute(
             """
@@ -68,14 +73,18 @@ def write_event(event: ContagionEvent) -> None:
                 event.source_run_id,
             ),
         )
-    redis = get_redis()
-    redis.set(f"latest:contagion:{event.event_id}", event.model_dump_json(), ex=600)
-    emit_contagion_alert(event)
+    if update_live_cache:
+        redis = get_redis()
+        redis.set(f"latest:contagion:{event.event_id}", event.model_dump_json(), ex=600)
+    if emit_alerts:
+        emit_contagion_alert(event)
     logger.info(
-        "persisted contagion event trigger=%s affected=%s risk=%.3f",
+        "persisted contagion event trigger=%s affected=%s risk=%.3f live_cache=%s emit_alerts=%s",
         event.trigger_symbol,
         event.affected_count,
         event.risk_score,
+        update_live_cache,
+        emit_alerts,
     )
 
 
@@ -99,13 +108,23 @@ def build_event(window: ObservationWindow, event_timestamp: datetime) -> Contagi
     )
 
 
-def flush_expired(active: dict[str, ObservationWindow], now: datetime) -> None:
+def flush_expired(
+    active: dict[str, ObservationWindow],
+    now: datetime,
+    *,
+    update_live_cache: bool = True,
+    emit_alerts: bool = True,
+) -> None:
     expired = [symbol for symbol, window in active.items() if window.end <= now]
     for symbol in expired:
         window = active.pop(symbol)
         if not window.affected_symbols:
             continue
-        write_event(build_event(window, window.end))
+        write_event(
+            build_event(window, window.end),
+            update_live_cache=update_live_cache,
+            emit_alerts=emit_alerts,
+        )
 
 
 def main() -> None:

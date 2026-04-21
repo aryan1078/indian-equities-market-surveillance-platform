@@ -115,6 +115,10 @@ def recompute(trading_date: date, source_run_id: str | None = None) -> int:
     )
     with pg_connection() as conn:
         conn.execute("DELETE FROM operational.contagion_events WHERE trading_date = %s", (trading_date,))
+        conn.execute(
+            "DELETE FROM operational.alert_events WHERE event_category = 'contagion' AND trading_date = %s",
+            (trading_date,),
+        )
 
     lookup = sector_lookup()
     sector_members: dict[str, set[str]] = {}
@@ -125,7 +129,7 @@ def recompute(trading_date: date, source_run_id: str | None = None) -> int:
 
     active_windows: dict[str, ObservationWindow] = {}
     for detection in anomalies:
-        flush_expired(active_windows, detection.timestamp_utc)
+        flush_expired(active_windows, detection.timestamp_utc, update_live_cache=False, emit_alerts=False)
 
         for trigger_symbol, window in active_windows.items():
             if (
@@ -136,7 +140,11 @@ def recompute(trading_date: date, source_run_id: str | None = None) -> int:
             ):
                 window.affected_symbols.add(detection.symbol)
                 window.peer_scores.append(detection.composite_score)
-                write_event(build_event(window, detection.timestamp_utc))
+                write_event(
+                    build_event(window, detection.timestamp_utc),
+                    update_live_cache=False,
+                    emit_alerts=False,
+                )
 
         if detection.symbol in active_windows or not detection.is_anomalous:
             continue
@@ -159,7 +167,7 @@ def recompute(trading_date: date, source_run_id: str | None = None) -> int:
             ).hexdigest(),
         )
 
-    flush_expired(active_windows, datetime.now(tz=UTC))
+    flush_expired(active_windows, datetime.now(tz=UTC), update_live_cache=False, emit_alerts=False)
     with pg_connection() as conn:
         event_count = int(
             conn.execute(

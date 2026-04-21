@@ -1,6 +1,7 @@
 from api_service.main import (
     _alert_summary,
     _anomaly_summary,
+    _filter_latest_trading_session,
     _history_summary,
     _streaming_counts_from_bulk_runs,
     _system_scale_projection,
@@ -89,3 +90,26 @@ def test_streaming_counts_from_bulk_runs_uses_bulk_metadata_only():
 
     assert counts["market_ticks"] == 10750500
     assert counts["anomaly_metrics"] == 10177255
+
+
+def test_filter_latest_trading_session_drops_stale_symbols():
+    filtered = _filter_latest_trading_session(
+        {
+            "RELIANCE.BO": {
+                "symbol": "RELIANCE.BO",
+                "trading_date": "2026-03-16",
+                "timestamp_ist": "2026-03-16T15:29:00+05:30",
+            },
+            "INFY.NS": {
+                "symbol": "INFY.NS",
+                "trading_date": "2026-04-20",
+                "timestamp_ist": "2026-04-20T15:29:00+05:30",
+            },
+            "SBIN.NS": {
+                "symbol": "SBIN.NS",
+                "timestamp_ist": "2026-04-20T15:29:00+05:30",
+            },
+        }
+    )
+
+    assert set(filtered) == {"INFY.NS", "SBIN.NS"}

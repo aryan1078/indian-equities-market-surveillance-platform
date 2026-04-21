@@ -120,6 +120,38 @@ def _merge_latest_record(base: dict[str, Any] | None, overlay: dict[str, Any]) -
     return {**base, **overlay}
 
 
+def _record_trading_date(record: dict[str, Any]) -> date | None:
+    raw = record.get("trading_date")
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text:
+            if "T" in text:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+            return date.fromisoformat(text)
+    timestamp = _record_timestamp(record)
+    if timestamp is None:
+        return None
+    return as_market_time(timestamp).date()
+
+
+def _filter_latest_trading_session(records: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    latest_trading_date = max(
+        (_record_trading_date(record) for record in records.values()),
+        default=None,
+    )
+    if latest_trading_date is None:
+        return records
+    return {
+        symbol: record
+        for symbol, record in records.items()
+        if _record_trading_date(record) == latest_trading_date
+    }
+
+
 def _streaming_counts_from_bulk_runs(rows: list[dict[str, Any]]) -> dict[str, int]:
     tick_rows = 0
     anomaly_rows = 0
@@ -249,7 +281,7 @@ def _load_latest_market_map() -> dict[str, dict[str, Any]]:
         if not symbol:
             continue
         records[symbol] = _merge_latest_record(records.get(symbol), item)
-    return records
+    return _filter_latest_trading_session(records)
 
 
 def _latest_market_map() -> dict[str, dict[str, Any]]:
@@ -297,7 +329,7 @@ def _load_latest_anomaly_map() -> dict[str, dict[str, Any]]:
         }
     for item in redis_json_values("latest:anomaly:*"):
         symbol = item.get("symbol")
-        if not symbol:
+        if not symbol or symbol not in latest_market:
             continue
         records[symbol] = _merge_latest_record(records.get(symbol), item)
     return records
