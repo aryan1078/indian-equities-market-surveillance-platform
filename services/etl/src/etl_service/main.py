@@ -6,10 +6,16 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from cassandra.concurrent import execute_concurrent_with_args
+
 from market_surveillance.db import get_cassandra_session, pg_connection
-from market_surveillance.market_time import date_sk, market_tz, minute_of_day
+from market_surveillance.market_time import date_sk
 from market_surveillance.metadata import load_stock_references, valid_peer_sector
 from market_surveillance.sql import iter_date_dimension
+
+
+STOCK_DIM_VALID_FROM = date(2000, 1, 1)
+ETL_CASSANDRA_CONCURRENCY = 128
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +23,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     run = subparsers.add_parser("run")
     run.add_argument("--trading-date", required=True)
+    run_window = subparsers.add_parser("run-window")
+    run_window.add_argument("--start-date")
+    run_window.add_argument("--end-date")
+    run_window.add_argument("--latest-minute-window", action="store_true")
     return parser
 
 
@@ -44,8 +54,69 @@ def start_run(trading_date: date) -> str:
     return run_id
 
 
-def load_dimensions(trading_date: date) -> None:
-    local_tz = market_tz()
+def supersede_running_runs(start_date: date, end_date: date, reason: str) -> None:
+    with pg_connection() as conn:
+        conn.execute(
+            """
+            UPDATE operational.etl_runs
+            SET status = 'failed',
+                finished_at = NOW(),
+                notes = jsonb_build_object('error', CAST(%s AS text))
+            WHERE status = 'running'
+              AND trading_date BETWEEN %s AND %s
+            """,
+            (reason, start_date, end_date),
+        )
+
+
+def _coerce_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    return date.fromisoformat(text)
+
+
+def latest_minute_backfill_window() -> tuple[date, date] | None:
+    with pg_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT notes
+            FROM operational.ingestion_runs
+            WHERE mode = 'minute_backfill'
+              AND status = 'completed'
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    if not row:
+        return None
+    notes = row["notes"] if isinstance(row["notes"], dict) else {}
+    start_date = _coerce_date(notes.get("window_start"))
+    end_date = _coerce_date(notes.get("window_end"))
+    if start_date is None or end_date is None:
+        return None
+    return start_date, end_date
+
+
+def trading_dates_for_window(start_date: date, end_date: date) -> list[date]:
+    with pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT trading_date
+            FROM operational.stock_daily_bars
+            WHERE trading_date BETWEEN %s AND %s
+            ORDER BY trading_date ASC
+            """,
+            (start_date, end_date),
+        ).fetchall()
+    return [row["trading_date"] for row in rows]
+
+
+def load_date_dimension(trading_date: date) -> None:
     dim_date = iter_date_dimension(trading_date)
     with pg_connection() as conn:
         conn.execute(
@@ -67,6 +138,10 @@ def load_dimensions(trading_date: date) -> None:
                 dim_date["is_weekend"],
             ),
         )
+
+
+def load_static_dimensions() -> None:
+    with pg_connection() as conn:
         for minute in range(24 * 60):
             label = f"{minute // 60:02d}:{minute % 60:02d}"
             conn.execute(
@@ -89,16 +164,33 @@ def load_dimensions(trading_date: date) -> None:
             )
             conn.execute(
                 """
+                UPDATE warehouse.dim_stock
+                SET is_current = false,
+                    valid_to = COALESCE(valid_to, %s)
+                WHERE symbol = %s
+                  AND valid_from <> %s
+                  AND is_current = true
+                """,
+                (STOCK_DIM_VALID_FROM - timedelta(days=1), stock.symbol, STOCK_DIM_VALID_FROM),
+            )
+            conn.execute(
+                """
                 INSERT INTO warehouse.dim_stock (symbol, company_name, sector_name, exchange_code, valid_from, is_current)
                 VALUES (%s, %s, %s, %s, %s, true)
                 ON CONFLICT (symbol, valid_from) DO UPDATE
                 SET company_name = EXCLUDED.company_name,
                     sector_name = EXCLUDED.sector_name,
                     exchange_code = EXCLUDED.exchange_code,
-                    is_current = true
+                    is_current = true,
+                    valid_to = NULL
                 """,
-                (stock.symbol, stock.company_name, stock.sector, stock.exchange, trading_date),
+                (stock.symbol, stock.company_name, stock.sector, stock.exchange, STOCK_DIM_VALID_FROM),
             )
+
+
+def load_dimensions(trading_date: date) -> None:
+    load_date_dimension(trading_date)
+    load_static_dimensions()
 
 
 def extract_anomalies(trading_date: date) -> list[dict]:
@@ -113,8 +205,17 @@ def extract_anomalies(trading_date: date) -> list[dict]:
         """
     )
     rows: list[dict] = []
-    for stock in load_stock_references():
-        for row in session.execute(select_stmt, (stock.symbol, trading_date)):
+    query_args = [(stock.symbol, trading_date) for stock in load_stock_references()]
+    for success, result in execute_concurrent_with_args(
+        session,
+        select_stmt,
+        query_args,
+        concurrency=ETL_CASSANDRA_CONCURRENCY,
+        raise_on_first_error=True,
+    ):
+        if not success:
+            raise result
+        for row in result:
             if row["price_z_score"] is None:
                 continue
             rows.append(row)
@@ -155,39 +256,42 @@ def stage_rows(run_id: str, rows: list[dict]) -> tuple[int, int]:
     metadata_lookup = {stock.symbol: stock for stock in load_stock_references()}
     with pg_connection() as conn:
         conn.execute("DELETE FROM staging.anomaly_metrics_stage WHERE run_id = %s", (run_id,))
-        for row in rows:
-            trading_date = normalize_trading_date(row["trading_date"])
-            timestamp_utc = normalize_timestamp(row["timestamp_utc"])
-            timestamp_ist = normalize_timestamp(row["timestamp_ist"])
-            sector = canonical_stage_sector(str(row["symbol"]), row["sector"], metadata_lookup)
-            conn.execute(
+        with conn.cursor() as cur:
+            with cur.copy(
                 """
-                INSERT INTO staging.anomaly_metrics_stage (
+                COPY staging.anomaly_metrics_stage (
                     run_id, symbol, trading_date, timestamp_utc, timestamp_ist, exchange, sector,
                     close, volume, return_pct, rolling_volatility, price_z_score, volume_z_score,
                     composite_score, is_anomalous, source_run_id, dedupe_key
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    run_id,
-                    row["symbol"],
-                    trading_date,
-                    timestamp_utc,
-                    timestamp_ist,
-                    row["exchange"],
-                    sector,
-                    row["close"],
-                    row["volume"],
-                    row["return_pct"],
-                    row["rolling_volatility"],
-                    row["price_z_score"],
-                    row["volume_z_score"],
-                    row["composite_score"],
-                    row["is_anomalous"],
-                    row["source_run_id"],
-                    row["dedupe_key"],
-                ),
-            )
+                ) FROM STDIN
+                """
+            ) as copy:
+                for row in rows:
+                    trading_date = normalize_trading_date(row["trading_date"])
+                    timestamp_utc = normalize_timestamp(row["timestamp_utc"])
+                    timestamp_ist = normalize_timestamp(row["timestamp_ist"])
+                    sector = canonical_stage_sector(str(row["symbol"]), row["sector"], metadata_lookup)
+                    copy.write_row(
+                        (
+                            run_id,
+                            row["symbol"],
+                            trading_date,
+                            timestamp_utc,
+                            timestamp_ist,
+                            row["exchange"],
+                            sector,
+                            row["close"],
+                            row["volume"],
+                            row["return_pct"],
+                            row["rolling_volatility"],
+                            row["price_z_score"],
+                            row["volume_z_score"],
+                            row["composite_score"],
+                            row["is_anomalous"],
+                            row["source_run_id"],
+                            row["dedupe_key"],
+                        )
+                    )
         conn.execute(
             """
             UPDATE staging.anomaly_metrics_stage s
@@ -275,13 +379,14 @@ def rebuild_materialized_views(conn) -> int:
             SELECT
                 sec.sector_name,
                 COUNT(DISTINCT f.date_sk) AS sessions_covered,
-                COUNT(DISTINCT f.stock_sk) AS symbols_covered,
+                COUNT(DISTINCT ds.symbol) AS symbols_covered,
                 SUM(f.anomaly_count) AS total_anomalies,
                 AVG(f.avg_composite_score) AS avg_daily_composite_score,
                 MAX(f.max_composite_score) AS peak_daily_composite_score,
                 SUM(f.contagion_event_count) AS contagion_event_count,
                 MAX(d.calendar_date) AS latest_calendar_date
             FROM warehouse.fact_market_day f
+            JOIN warehouse.dim_stock ds ON ds.stock_sk = f.stock_sk
             JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
             JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
             GROUP BY sec.sector_name
@@ -315,20 +420,40 @@ def rebuild_materialized_views(conn) -> int:
     conn.execute(
         """
         CREATE MATERIALIZED VIEW warehouse.mv_stock_signal_leaders AS
-        WITH latest_snapshot AS (
-            SELECT DISTINCT ON (f.stock_sk)
-                f.stock_sk,
-                d.calendar_date AS latest_calendar_date,
-                f.anomaly_count AS latest_anomaly_count,
-                f.max_composite_score AS latest_peak_score
+        WITH daily_facts AS (
+            SELECT
+                ds.symbol,
+                d.calendar_date,
+                f.anomaly_count,
+                f.avg_composite_score,
+                f.max_composite_score,
+                f.contagion_event_count
             FROM warehouse.fact_market_day f
+            JOIN warehouse.dim_stock ds ON ds.stock_sk = f.stock_sk
             JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
-            ORDER BY f.stock_sk, d.calendar_date DESC
+        ),
+        current_stock AS (
+            SELECT DISTINCT ON (symbol)
+                symbol,
+                company_name,
+                sector_name
+            FROM warehouse.dim_stock
+            WHERE is_current = true
+            ORDER BY symbol, valid_from DESC
+        ),
+        latest_snapshot AS (
+            SELECT DISTINCT ON (symbol)
+                symbol,
+                calendar_date AS latest_calendar_date,
+                anomaly_count AS latest_anomaly_count,
+                max_composite_score AS latest_peak_score
+            FROM daily_facts
+            ORDER BY symbol, calendar_date DESC
         )
         SELECT
-            s.symbol,
-            s.company_name,
-            sec.sector_name,
+            latest_snapshot.symbol,
+            cs.company_name,
+            cs.sector_name,
             COUNT(*) AS sessions_covered,
             COUNT(*) FILTER (WHERE f.anomaly_count > 0) AS anomaly_days,
             SUM(f.anomaly_count) AS total_anomalies,
@@ -338,14 +463,13 @@ def rebuild_materialized_views(conn) -> int:
             latest_snapshot.latest_calendar_date,
             latest_snapshot.latest_anomaly_count,
             latest_snapshot.latest_peak_score
-        FROM warehouse.fact_market_day f
-        JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk AND s.is_current = true
-        JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
-        JOIN latest_snapshot ON latest_snapshot.stock_sk = f.stock_sk
+        FROM daily_facts f
+        JOIN latest_snapshot ON latest_snapshot.symbol = f.symbol
+        JOIN current_stock cs ON cs.symbol = latest_snapshot.symbol
         GROUP BY
-            s.symbol,
-            s.company_name,
-            sec.sector_name,
+            latest_snapshot.symbol,
+            cs.company_name,
+            cs.sector_name,
             latest_snapshot.latest_calendar_date,
             latest_snapshot.latest_anomaly_count,
             latest_snapshot.latest_peak_score
@@ -366,7 +490,7 @@ def purge_facts_for_date(conn, trading_date: date) -> None:
     conn.execute("DELETE FROM warehouse.fact_anomaly_minute WHERE date_sk = %s", (day_key,))
 
 
-def load_facts(run_id: str, trading_date: date) -> tuple[int, int]:
+def load_facts(run_id: str, trading_date: date, rebuild_views: bool = True) -> tuple[int, int]:
     with pg_connection() as conn:
         purge_facts_for_date(conn, trading_date)
         conn.execute(
@@ -497,7 +621,8 @@ def load_facts(run_id: str, trading_date: date) -> tuple[int, int]:
             (trading_date,),
         )
 
-        aggregate_rows = rebuild_materialized_views(conn)
+        conn.execute("DELETE FROM staging.anomaly_metrics_stage WHERE run_id = %s", (run_id,))
+        aggregate_rows = rebuild_materialized_views(conn) if rebuild_views else 0
     return inserted_rows, aggregate_rows
 
 
@@ -527,20 +652,32 @@ def fail_run(run_id: str, error_message: str) -> None:
             UPDATE operational.etl_runs
             SET finished_at = now(),
                 status = 'failed',
-                notes = jsonb_build_object('error', %s)
+                notes = jsonb_build_object('error', CAST(%s AS text))
             WHERE run_id = %s
             """,
             (error_message[:500], run_id),
         )
 
 
-def run_for_date(trading_date: date) -> None:
+def run_for_date(trading_date: date, rebuild_views: bool = True, prepare_dimensions: bool = True) -> None:
     run_id = start_run(trading_date)
     try:
-        load_dimensions(trading_date)
+        print(f"[etl] starting trading_date={trading_date.isoformat()} run_id={run_id}", flush=True)
+        if prepare_dimensions:
+            load_dimensions(trading_date)
+            print(f"[etl] dimensions prepared for {trading_date.isoformat()}", flush=True)
         rows = extract_anomalies(trading_date)
+        print(f"[etl] extracted {len(rows)} anomaly rows for {trading_date.isoformat()}", flush=True)
         extracted_rows, excluded_rows = stage_rows(run_id, rows)
-        inserted_rows, aggregate_rows = load_facts(run_id, trading_date)
+        print(
+            f"[etl] staged rows for {trading_date.isoformat()} extracted={extracted_rows} excluded={excluded_rows}",
+            flush=True,
+        )
+        inserted_rows, aggregate_rows = load_facts(run_id, trading_date, rebuild_views=rebuild_views)
+        print(
+            f"[etl] loaded facts for {trading_date.isoformat()} inserted={inserted_rows} aggregate_rows={aggregate_rows}",
+            flush=True,
+        )
         with pg_connection() as conn:
             conn.execute(
                 """
@@ -551,15 +688,58 @@ def run_for_date(trading_date: date) -> None:
                 (excluded_rows, run_id),
             )
         finish_run(run_id, extracted_rows, extracted_rows - excluded_rows, inserted_rows, aggregate_rows)
+        print(f"[etl] completed trading_date={trading_date.isoformat()} run_id={run_id}", flush=True)
     except Exception as exc:
         fail_run(run_id, str(exc))
+        print(f"[etl] failed trading_date={trading_date.isoformat()} run_id={run_id}: {exc}", flush=True)
         raise
+
+
+def run_window(start_date: date, end_date: date) -> list[date]:
+    trading_dates = trading_dates_for_window(start_date, end_date)
+    if not trading_dates:
+        return []
+
+    print(
+        f"[etl] starting window start_date={start_date.isoformat()} end_date={end_date.isoformat()} dates={len(trading_dates)}",
+        flush=True,
+    )
+    supersede_running_runs(
+        start_date,
+        end_date,
+        f"Superseded by rerun of ETL window {start_date.isoformat()} to {end_date.isoformat()}",
+    )
+    load_static_dimensions()
+    last_index = len(trading_dates) - 1
+    for index, trading_date in enumerate(trading_dates):
+        print(f"[etl] window progress {index + 1}/{len(trading_dates)} date={trading_date.isoformat()}", flush=True)
+        load_date_dimension(trading_date)
+        run_for_date(trading_date, rebuild_views=index == last_index, prepare_dimensions=False)
+    print(
+        f"[etl] completed window start_date={start_date.isoformat()} end_date={end_date.isoformat()}",
+        flush=True,
+    )
+    return trading_dates
 
 
 def main() -> None:
     args = build_parser().parse_args()
     if args.command == "run":
         run_for_date(date.fromisoformat(args.trading_date))
+    elif args.command == "run-window":
+        if args.latest_minute_window:
+            latest_window = latest_minute_backfill_window()
+            if latest_window is None:
+                raise SystemExit("No completed minute_backfill window with window_start/window_end metadata was found.")
+            start_date, end_date = latest_window
+        else:
+            if not args.start_date or not args.end_date:
+                raise SystemExit("run-window requires --start-date and --end-date, or use --latest-minute-window.")
+            start_date = date.fromisoformat(args.start_date)
+            end_date = date.fromisoformat(args.end_date)
+        if start_date > end_date:
+            raise SystemExit("start-date must be on or before end-date")
+        run_window(start_date, end_date)
 
 
 if __name__ == "__main__":

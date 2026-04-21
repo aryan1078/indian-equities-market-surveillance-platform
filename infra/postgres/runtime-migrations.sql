@@ -66,13 +66,14 @@ WITH daily_summary AS (
     SELECT
         sec.sector_name,
         COUNT(DISTINCT f.date_sk) AS sessions_covered,
-        COUNT(DISTINCT f.stock_sk) AS symbols_covered,
+        COUNT(DISTINCT ds.symbol) AS symbols_covered,
         SUM(f.anomaly_count) AS total_anomalies,
         AVG(f.avg_composite_score) AS avg_daily_composite_score,
         MAX(f.max_composite_score) AS peak_daily_composite_score,
         SUM(f.contagion_event_count) AS contagion_event_count,
         MAX(d.calendar_date) AS latest_calendar_date
     FROM warehouse.fact_market_day f
+    JOIN warehouse.dim_stock ds ON ds.stock_sk = f.stock_sk
     JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
     JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
     GROUP BY sec.sector_name
@@ -102,20 +103,40 @@ LEFT JOIN minute_summary
   ON minute_summary.sector_name = daily_summary.sector_name;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS warehouse.mv_stock_signal_leaders AS
-WITH latest_snapshot AS (
-    SELECT DISTINCT ON (f.stock_sk)
-        f.stock_sk,
-        d.calendar_date AS latest_calendar_date,
-        f.anomaly_count AS latest_anomaly_count,
-        f.max_composite_score AS latest_peak_score
+WITH daily_facts AS (
+    SELECT
+        ds.symbol,
+        d.calendar_date,
+        f.anomaly_count,
+        f.avg_composite_score,
+        f.max_composite_score,
+        f.contagion_event_count
     FROM warehouse.fact_market_day f
+    JOIN warehouse.dim_stock ds ON ds.stock_sk = f.stock_sk
     JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
-    ORDER BY f.stock_sk, d.calendar_date DESC
+),
+current_stock AS (
+    SELECT DISTINCT ON (symbol)
+        symbol,
+        company_name,
+        sector_name
+    FROM warehouse.dim_stock
+    WHERE is_current = true
+    ORDER BY symbol, valid_from DESC
+),
+latest_snapshot AS (
+    SELECT DISTINCT ON (symbol)
+        symbol,
+        calendar_date AS latest_calendar_date,
+        anomaly_count AS latest_anomaly_count,
+        max_composite_score AS latest_peak_score
+    FROM daily_facts
+    ORDER BY symbol, calendar_date DESC
 )
 SELECT
-    s.symbol,
-    s.company_name,
-    sec.sector_name,
+    latest_snapshot.symbol,
+    cs.company_name,
+    cs.sector_name,
     COUNT(*) AS sessions_covered,
     COUNT(*) FILTER (WHERE f.anomaly_count > 0) AS anomaly_days,
     SUM(f.anomaly_count) AS total_anomalies,
@@ -125,14 +146,13 @@ SELECT
     latest_snapshot.latest_calendar_date,
     latest_snapshot.latest_anomaly_count,
     latest_snapshot.latest_peak_score
-FROM warehouse.fact_market_day f
-JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk AND s.is_current = true
-JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
-JOIN latest_snapshot ON latest_snapshot.stock_sk = f.stock_sk
+FROM daily_facts f
+JOIN latest_snapshot ON latest_snapshot.symbol = f.symbol
+JOIN current_stock cs ON cs.symbol = latest_snapshot.symbol
 GROUP BY
-    s.symbol,
-    s.company_name,
-    sec.sector_name,
+    latest_snapshot.symbol,
+    cs.company_name,
+    cs.sector_name,
     latest_snapshot.latest_calendar_date,
     latest_snapshot.latest_anomaly_count,
     latest_snapshot.latest_peak_score;

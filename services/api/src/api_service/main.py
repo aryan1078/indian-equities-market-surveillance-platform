@@ -1208,13 +1208,14 @@ def warehouse_summary() -> dict[str, Any]:
             WITH market_window AS (
                 SELECT
                     COUNT(*) AS market_day_rows,
-                    COUNT(DISTINCT f.stock_sk) AS stocks_covered,
+                    COUNT(DISTINCT s.symbol) AS stocks_covered,
                     COUNT(DISTINCT f.sector_sk) AS sectors_covered,
                     COUNT(DISTINCT f.date_sk) AS trading_days_loaded,
                     COALESCE(SUM(f.anomaly_count), 0) AS total_anomalies,
                     COALESCE(SUM(f.contagion_event_count), 0) AS total_contagion_events,
                     COALESCE(MAX(f.max_composite_score), 0) AS peak_daily_composite_score
                 FROM warehouse.fact_market_day f
+                JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk
             ),
             date_window AS (
                 SELECT
@@ -1298,7 +1299,7 @@ def warehouse_stock_outliers(limit: int = Query(50, ge=1, le=200)) -> list[dict[
                 f.avg_volume_z_score,
                 f.contagion_event_count
             FROM warehouse.fact_market_day f
-            JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk AND s.is_current = true
+            JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk
             JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
             JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
             ORDER BY d.calendar_date DESC, f.max_composite_score DESC, f.anomaly_count DESC, s.symbol

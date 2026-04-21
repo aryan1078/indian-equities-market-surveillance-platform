@@ -10,7 +10,7 @@ fake_db.get_cassandra_session = lambda: None
 fake_db.pg_connection = lambda: None
 sys.modules["market_surveillance.db"] = fake_db
 
-from etl_service.main import canonical_stage_sector, normalize_timestamp, normalize_trading_date
+from etl_service.main import _coerce_date, canonical_stage_sector, normalize_timestamp, normalize_trading_date
 
 if real_db is not None:
     sys.modules["market_surveillance.db"] = real_db
@@ -38,3 +38,9 @@ def test_canonical_stage_sector_prefers_metadata_for_unknown_rows() -> None:
     assert canonical_stage_sector("TATACONSUM.NS", "Unknown", metadata_lookup) == "Consumer Staples"
     assert canonical_stage_sector("TATACONSUM.NS", None, metadata_lookup) == "Consumer Staples"
     assert canonical_stage_sector("TATACONSUM.NS", "Consumer Staples", metadata_lookup) == "Consumer Staples"
+
+
+def test_coerce_date_accepts_iso_string_and_date() -> None:
+    assert _coerce_date("2026-04-03") == date(2026, 4, 3)
+    assert _coerce_date(date(2026, 4, 20)) == date(2026, 4, 20)
+    assert _coerce_date("") is None
