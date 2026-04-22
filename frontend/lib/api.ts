@@ -27,6 +27,25 @@ async function getJson<T>(path: string): Promise<T | null> {
   }
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T | null> {
+  try {
+    const response = await fetch(apiUrl(path), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
 export type StockReference = {
   symbol: string;
   exchange?: string | null;
@@ -384,6 +403,125 @@ export type WarehouseIntradayProfilePoint = {
   contagion_minutes: number;
 };
 
+export type WarehouseQueryField = {
+  key: string;
+  label: string;
+  description: string;
+  kind: "string" | "integer" | "number" | "date" | "time" | "datetime";
+  default_selected?: boolean;
+};
+
+export type WarehouseQueryDataset = {
+  key: string;
+  label: string;
+  description: string;
+  grain: string;
+  row_count: number;
+  supports: {
+    date: boolean;
+    sector: boolean;
+    exchange: boolean;
+    symbol_search: boolean;
+    min_signal: boolean;
+  };
+  dimensions: WarehouseQueryField[];
+  measures: WarehouseQueryField[];
+  defaults: {
+    dimensions: string[];
+    measures: string[];
+    sort_field: string;
+    sort_direction: "asc" | "desc";
+    limit: number;
+    date_from?: string | null;
+    date_to?: string | null;
+    suggested_window_days?: number | null;
+  };
+};
+
+export type WarehouseQueryPreset = {
+  id: string;
+  label: string;
+  description: string;
+  request: WarehouseQueryRequest;
+};
+
+export type WarehouseQueryMetadataResponse = {
+  generated_at: string;
+  date_window: {
+    first_calendar_date?: string | null;
+    last_calendar_date?: string | null;
+  };
+  sectors: string[];
+  exchanges: string[];
+  datasets: WarehouseQueryDataset[];
+  presets: WarehouseQueryPreset[];
+};
+
+export type WarehouseQueryRequest = {
+  dataset: string;
+  dimensions?: string[];
+  measures?: string[];
+  date_from?: string | null;
+  date_to?: string | null;
+  sector?: string | null;
+  exchange?: string | null;
+  symbol_search?: string | null;
+  min_signal?: number | null;
+  sort_field?: string | null;
+  sort_direction?: "asc" | "desc";
+  limit?: number;
+};
+
+export type WarehouseQueryResponse = {
+  dataset: {
+    key: string;
+    label: string;
+    description: string;
+    grain: string;
+    available_rows: number;
+  };
+  query: {
+    dimensions: string[];
+    measures: string[];
+    date_from?: string | null;
+    date_to?: string | null;
+    sector?: string | null;
+    exchange?: string | null;
+    symbol_search?: string | null;
+    min_signal?: number | null;
+    sort_field: string;
+    sort_direction: "asc" | "desc";
+    limit: number;
+    preview: string;
+  };
+  columns: Array<{
+    key: string;
+    label: string;
+    kind: "string" | "integer" | "number" | "date" | "time" | "datetime";
+    role: "dimension" | "measure";
+    description: string;
+  }>;
+  rows: Array<Record<string, string | number | null>>;
+  row_count: number;
+  query_time_ms: number;
+  chart?: {
+    kind: "line" | "bar";
+    label_key: string;
+    value_key: string;
+    title: string;
+  } | null;
+  report: {
+    headline: string;
+    subheadline: string;
+    highlights: Array<{
+      label: string;
+      value: string;
+    }>;
+    findings: string[];
+  };
+  generated_at: string;
+};
+
 export type SystemHealthResponse = {
   api?: string;
   redis?: boolean;
@@ -621,6 +759,14 @@ export async function fetchWarehouseStockPersistence(limit = 50) {
 
 export async function fetchWarehouseIntradayProfile(limit = 375) {
   return getJson<WarehouseIntradayProfilePoint[]>(`/api/warehouse/intraday-profile?limit=${limit}`);
+}
+
+export async function fetchWarehouseQueryMetadata() {
+  return getJson<WarehouseQueryMetadataResponse>("/api/warehouse/query-metadata");
+}
+
+export async function fetchWarehouseQuery(request: WarehouseQueryRequest) {
+  return postJson<WarehouseQueryResponse>("/api/warehouse/query", request);
 }
 
 export async function fetchSystemHealth() {

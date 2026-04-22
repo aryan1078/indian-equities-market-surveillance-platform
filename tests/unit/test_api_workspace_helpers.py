@@ -1,6 +1,7 @@
 from datetime import date
 
 from api_service.main import (
+    WarehouseQueryRequest,
     _alert_summary,
     _anomaly_summary,
     _filter_latest_trading_session,
@@ -8,6 +9,9 @@ from api_service.main import (
     _resolve_alert_scope,
     _streaming_counts_from_bulk_runs,
     _system_scale_projection,
+    _warehouse_normalize_query,
+    _warehouse_query_catalog,
+    _warehouse_report,
 )
 
 
@@ -147,3 +151,47 @@ def test_resolve_alert_scope_falls_back_to_latest_open_date_without_market_refer
     assert snapshot["stale_open_count"] == 4
     assert snapshot["total_open_count"] == 6
     assert snapshot["latest_stale_alert_date"] == date(2026, 3, 16)
+
+
+def test_warehouse_normalize_query_uses_defaults_and_swaps_dates():
+    request = WarehouseQueryRequest(
+        dataset="sector_day",
+        dimensions=["unknown_dimension"],
+        measures=["unknown_measure"],
+        date_from=date(2026, 4, 20),
+        date_to=date(2026, 4, 10),
+        limit=500,
+    )
+
+    normalized = _warehouse_normalize_query(request)
+    dataset = _warehouse_query_catalog()["sector_day"]
+
+    assert normalized["dimensions"] == list(dataset.default_dimensions)
+    assert normalized["measures"] == list(dataset.default_measures)
+    assert normalized["date_from"] == date(2026, 4, 10)
+    assert normalized["date_to"] == date(2026, 4, 20)
+    assert normalized["limit"] == 500
+
+
+def test_warehouse_report_surfaces_top_finding():
+    dataset = _warehouse_query_catalog()["sector_day"]
+    query = {
+        "dimensions": ["calendar_date", "sector_name"],
+        "measures": ["max_composite_score"],
+        "date_from": date(2026, 4, 1),
+        "date_to": date(2026, 4, 20),
+        "sector": None,
+        "exchange": None,
+        "symbol_search": None,
+        "limit": 25,
+    }
+    rows = [
+        {"calendar_date": "2026-04-18", "sector_name": "Banking", "max_composite_score": 2.85},
+        {"calendar_date": "2026-04-18", "sector_name": "IT", "max_composite_score": 1.92},
+    ]
+
+    report = _warehouse_report(dataset, query, rows, 31)
+
+    assert report["headline"] == "Sector daily rollups report"
+    assert any("Banking" in highlight["value"] for highlight in report["highlights"])
+    assert any("Banking" in finding for finding in report["findings"])

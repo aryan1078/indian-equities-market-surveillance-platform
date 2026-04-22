@@ -954,6 +954,159 @@ td {
   line-height: 1.45;
 }
 
+.datasetGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.8rem;
+}
+
+.datasetCard {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+
+.datasetCard:hover {
+  transform: translateY(-1px);
+  border-color: rgba(109, 210, 255, 0.24);
+  background: rgba(109, 210, 255, 0.06);
+}
+
+.datasetCard.active {
+  border-color: rgba(72, 201, 176, 0.32);
+  background: linear-gradient(180deg, rgba(72, 201, 176, 0.12), rgba(109, 210, 255, 0.06));
+}
+
+.datasetCardKicker {
+  color: var(--accent);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.datasetCard strong {
+  font-size: 1rem;
+}
+
+.datasetCard span:last-child {
+  color: var(--muted);
+  line-height: 1.45;
+  font-size: 0.84rem;
+}
+
+.querySection {
+  display: grid;
+  gap: 1rem;
+}
+
+.querySectionTitle {
+  margin-bottom: 0.55rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.fieldChipGrid {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.fieldChipWrap {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.fieldChip {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.72rem 0.84rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted-strong);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.fieldChip:hover {
+  border-color: rgba(109, 210, 255, 0.22);
+  background: rgba(109, 210, 255, 0.06);
+  color: var(--ink);
+}
+
+.fieldChip.active {
+  border-color: rgba(72, 201, 176, 0.28);
+  background: linear-gradient(180deg, rgba(72, 201, 176, 0.12), rgba(109, 210, 255, 0.08));
+  color: var(--ink);
+}
+
+.studioFiltersGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.8rem;
+}
+
+.queryField {
+  display: grid;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
+.queryFieldWide {
+  grid-column: span 2;
+}
+
+.queryField span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.querySynopsis {
+  color: var(--muted-strong);
+  line-height: 1.5;
+}
+
+.queryActionRow {
+  margin-top: 1rem;
+}
+
+.primaryAction {
+  border-color: rgba(72, 201, 176, 0.28);
+  background: linear-gradient(180deg, rgba(72, 201, 176, 0.14), rgba(109, 210, 255, 0.08));
+  color: var(--ink);
+}
+
+.reportFindings {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.reportFindings p {
+  margin: 0;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(155, 177, 201, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted-strong);
+  line-height: 1.55;
+}
+
 .explainerGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -1715,6 +1868,7 @@ td {
   .contentGrid.twoUp,
   .statsGrid,
   .quickActionsGrid,
+  .datasetGrid,
   .cardGrid.compact,
   .keyValueGrid,
   .chartSummaryRow,
@@ -1754,5 +1908,9 @@ td {
 
   .networkMeta {
     justify-content: flex-start;
+  }
+
+  .queryFieldWide {
+    grid-column: span 1;
   }
 }

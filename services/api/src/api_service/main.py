@@ -6,12 +6,13 @@ from collections import defaultdict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from market_surveillance.analytics import compute_daily_indicators
 from market_surveillance.db import get_cassandra_session, get_redis, pg_connection
@@ -70,6 +71,811 @@ def _clear_api_cache(prefix: str | None = None) -> None:
         return
     for key in [cache_key for cache_key in _API_CACHE if cache_key.startswith(prefix)]:
         _API_CACHE.pop(key, None)
+
+
+@dataclass(frozen=True)
+class WarehouseFieldDef:
+    label: str
+    sql: str
+    description: str
+    kind: Literal["string", "integer", "number", "date", "time", "datetime"] = "string"
+
+
+@dataclass(frozen=True)
+class WarehouseDatasetDef:
+    key: str
+    label: str
+    description: str
+    grain: str
+    relation: str
+    base_sql: str
+    dimensions: dict[str, WarehouseFieldDef]
+    measures: dict[str, WarehouseFieldDef]
+    default_dimensions: tuple[str, ...]
+    default_measures: tuple[str, ...]
+    default_sort_field: str
+    default_sort_direction: Literal["asc", "desc"] = "desc"
+    default_limit: int = 100
+    chart_preference: Literal["auto", "line", "bar"] = "auto"
+    supports_date: bool = False
+    supports_sector: bool = False
+    supports_exchange: bool = False
+    supports_symbol_search: bool = False
+    supports_min_signal: bool = False
+    date_sql: str | None = None
+    sector_sql: str | None = None
+    exchange_sql: str | None = None
+    symbol_sql: str | None = None
+    company_sql: str | None = None
+    signal_sql: str | None = None
+    suggested_window_days: int | None = None
+
+
+class WarehouseQueryRequest(BaseModel):
+    dataset: str = Field(default="stock_day")
+    dimensions: list[str] = Field(default_factory=list, max_length=4)
+    measures: list[str] = Field(default_factory=list, max_length=5)
+    date_from: date | None = None
+    date_to: date | None = None
+    sector: str | None = None
+    exchange: str | None = None
+    symbol_search: str | None = None
+    min_signal: float | None = None
+    sort_field: str | None = None
+    sort_direction: Literal["asc", "desc"] = "desc"
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+def _warehouse_query_catalog() -> dict[str, WarehouseDatasetDef]:
+    threshold = get_settings().anomaly_composite_threshold
+    return {
+        "stock_day": WarehouseDatasetDef(
+            key="stock_day",
+            label="Stock daily facts",
+            description="Daily stock-level warehouse rows for anomaly counts, score peaks, and contagion counts.",
+            grain="One row per stock per trading day in the warehouse.",
+            relation="warehouse.fact_market_day",
+            base_sql="""
+                FROM warehouse.fact_market_day f
+                JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk
+                JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+                JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+                JOIN warehouse.dim_exchange ex ON ex.exchange_sk = f.exchange_sk
+            """,
+            dimensions={
+                "calendar_date": WarehouseFieldDef("Trading date", "d.calendar_date", "Warehouse trading date.", "date"),
+                "symbol": WarehouseFieldDef("Symbol", "s.symbol", "Exchange-traded stock symbol."),
+                "company_name": WarehouseFieldDef("Company", "s.company_name", "Company name carried by the stock dimension."),
+                "sector_name": WarehouseFieldDef("Sector", "sec.sector_name", "Current sector classification."),
+                "exchange_code": WarehouseFieldDef("Exchange", "ex.exchange_code", "Exchange code from the warehouse exchange dimension."),
+            },
+            measures={
+                "market_day_rows": WarehouseFieldDef("Rows", "COUNT(*)", "Number of stock-day rows in the grouped result.", "integer"),
+                "anomaly_count": WarehouseFieldDef("Anomaly count", "COALESCE(SUM(f.anomaly_count), 0)", "Total anomalous minute flags across the grouped stock-day rows.", "integer"),
+                "avg_composite_score": WarehouseFieldDef("Avg composite score", "AVG(f.avg_composite_score)", "Average daily composite score across the grouped rows.", "number"),
+                "peak_composite_score": WarehouseFieldDef("Peak composite score", "MAX(f.max_composite_score)", "Maximum daily composite score inside the grouped result.", "number"),
+                "avg_volume_z_score": WarehouseFieldDef("Avg volume z", "AVG(f.avg_volume_z_score)", "Average daily volume surprise across the grouped rows.", "number"),
+                "contagion_event_count": WarehouseFieldDef("Contagion events", "COALESCE(SUM(f.contagion_event_count), 0)", "Total contagion windows linked to the grouped stock-day rows.", "integer"),
+            },
+            default_dimensions=("calendar_date", "sector_name", "symbol"),
+            default_measures=("anomaly_count", "peak_composite_score", "contagion_event_count"),
+            default_sort_field="peak_composite_score",
+            supports_date=True,
+            supports_sector=True,
+            supports_exchange=True,
+            supports_symbol_search=True,
+            supports_min_signal=True,
+            date_sql="d.calendar_date",
+            sector_sql="sec.sector_name",
+            exchange_sql="ex.exchange_code",
+            symbol_sql="s.symbol",
+            company_sql="s.company_name",
+            signal_sql="f.max_composite_score",
+            suggested_window_days=14,
+        ),
+        "sector_day": WarehouseDatasetDef(
+            key="sector_day",
+            label="Sector daily rollups",
+            description="Sector-by-day materialized warehouse summary for stress ranking and cross-sector comparisons.",
+            grain="One row per sector per trading day in the warehouse summary view.",
+            relation="warehouse.mv_sector_daily_summary",
+            base_sql="FROM warehouse.mv_sector_daily_summary sd",
+            dimensions={
+                "calendar_date": WarehouseFieldDef("Trading date", "sd.calendar_date", "Trading date for the sector summary row.", "date"),
+                "sector_name": WarehouseFieldDef("Sector", "sd.sector_name", "Sector represented by the summary row."),
+            },
+            measures={
+                "group_rows": WarehouseFieldDef("Rows", "COUNT(*)", "Number of grouped summary rows returned.", "integer"),
+                "active_minutes": WarehouseFieldDef("Active minutes", "COALESCE(SUM(sd.active_minutes), 0)", "Minute rows contributing to the grouped sector summary.", "integer"),
+                "avg_composite_score": WarehouseFieldDef("Avg composite score", "AVG(sd.avg_composite_score)", "Average sector composite score across grouped rows.", "number"),
+                "max_composite_score": WarehouseFieldDef("Peak composite score", "MAX(sd.max_composite_score)", "Highest sector composite score inside the grouped result.", "number"),
+                "contagion_minutes": WarehouseFieldDef("Contagion minutes", "COALESCE(SUM(sd.contagion_minutes), 0)", "Minutes in the grouped result marked as contagion-linked.", "integer"),
+            },
+            default_dimensions=("calendar_date", "sector_name"),
+            default_measures=("active_minutes", "max_composite_score", "contagion_minutes"),
+            default_sort_field="max_composite_score",
+            supports_date=True,
+            supports_sector=True,
+            supports_min_signal=True,
+            date_sql="sd.calendar_date",
+            sector_sql="sd.sector_name",
+            signal_sql="sd.max_composite_score",
+            suggested_window_days=21,
+        ),
+        "minute_signals": WarehouseDatasetDef(
+            key="minute_signals",
+            label="Minute signal facts",
+            description="Minute-grain anomaly facts for intraday pressure analysis across date, time, sector, and symbol.",
+            grain="One row per stock per trading date per minute in the anomaly fact table.",
+            relation="warehouse.fact_anomaly_minute",
+            base_sql="""
+                FROM warehouse.fact_anomaly_minute f
+                JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk
+                JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+                JOIN warehouse.dim_time t ON t.time_sk = f.time_sk
+                JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+                JOIN warehouse.dim_exchange ex ON ex.exchange_sk = f.exchange_sk
+            """,
+            dimensions={
+                "calendar_date": WarehouseFieldDef("Trading date", "d.calendar_date", "Trading date of the minute fact row.", "date"),
+                "time_label": WarehouseFieldDef("Time", "t.label", "IST minute bucket label from the warehouse time dimension.", "time"),
+                "sector_name": WarehouseFieldDef("Sector", "sec.sector_name", "Sector linked to the minute fact row."),
+                "symbol": WarehouseFieldDef("Symbol", "s.symbol", "Stock symbol on the minute fact row."),
+                "exchange_code": WarehouseFieldDef("Exchange", "ex.exchange_code", "Exchange code linked to the minute fact row."),
+            },
+            measures={
+                "minute_rows": WarehouseFieldDef("Minute rows", "COUNT(*)", "Number of anomaly-minute fact rows in the grouped result.", "integer"),
+                "flagged_minutes": WarehouseFieldDef("Flagged minutes", f"SUM(CASE WHEN f.composite_score >= {threshold} THEN 1 ELSE 0 END)", "Minute rows meeting or exceeding the anomaly composite threshold.", "integer"),
+                "avg_composite_score": WarehouseFieldDef("Avg composite score", "AVG(f.composite_score)", "Average minute-level composite score inside the grouped result.", "number"),
+                "peak_composite_score": WarehouseFieldDef("Peak composite score", "MAX(f.composite_score)", "Highest minute-level composite score inside the grouped result.", "number"),
+                "avg_price_z_score": WarehouseFieldDef("Avg price z", "AVG(f.price_z_score)", "Average minute-level price surprise.", "number"),
+                "avg_volume_z_score": WarehouseFieldDef("Avg volume z", "AVG(f.volume_z_score)", "Average minute-level volume surprise.", "number"),
+                "contagion_minutes": WarehouseFieldDef("Contagion minutes", "SUM(CASE WHEN f.contagion_flag THEN 1 ELSE 0 END)", "Minute rows tagged as contagion-linked.", "integer"),
+            },
+            default_dimensions=("calendar_date", "time_label", "sector_name"),
+            default_measures=("flagged_minutes", "peak_composite_score", "contagion_minutes"),
+            default_sort_field="peak_composite_score",
+            supports_date=True,
+            supports_sector=True,
+            supports_exchange=True,
+            supports_symbol_search=True,
+            supports_min_signal=True,
+            date_sql="d.calendar_date",
+            sector_sql="sec.sector_name",
+            exchange_sql="ex.exchange_code",
+            symbol_sql="s.symbol",
+            company_sql="s.company_name",
+            signal_sql="f.composite_score",
+            suggested_window_days=5,
+        ),
+        "contagion_events": WarehouseDatasetDef(
+            key="contagion_events",
+            label="Contagion events",
+            description="Warehouse contagion events for trigger symbol, sector spread, risk score, and affected-count analysis.",
+            grain="One row per persisted contagion event.",
+            relation="warehouse.fact_contagion_event",
+            base_sql="""
+                FROM warehouse.fact_contagion_event c
+                JOIN warehouse.dim_stock s ON s.stock_sk = c.stock_sk
+                JOIN warehouse.dim_date d ON d.date_sk = c.date_sk
+                JOIN warehouse.dim_sector sec ON sec.sector_sk = c.sector_sk
+            """,
+            dimensions={
+                "calendar_date": WarehouseFieldDef("Trading date", "d.calendar_date", "Trading date of the contagion event.", "date"),
+                "event_timestamp": WarehouseFieldDef("Event time", "c.event_timestamp", "Timestamp at which the contagion event was recorded.", "datetime"),
+                "trigger_symbol": WarehouseFieldDef("Trigger symbol", "s.symbol", "Symbol that initiated the contagion window."),
+                "sector_name": WarehouseFieldDef("Sector", "sec.sector_name", "Sector associated with the contagion event."),
+                "exchange_code": WarehouseFieldDef("Exchange", "s.exchange_code", "Exchange code carried by the current stock dimension."),
+            },
+            measures={
+                "event_count": WarehouseFieldDef("Event count", "COUNT(*)", "Number of contagion events in the grouped result.", "integer"),
+                "avg_risk_score": WarehouseFieldDef("Avg risk score", "AVG(c.risk_score)", "Average contagion risk score across grouped events.", "number"),
+                "max_risk_score": WarehouseFieldDef("Peak risk score", "MAX(c.risk_score)", "Maximum contagion risk score inside the grouped result.", "number"),
+                "avg_affected_count": WarehouseFieldDef("Avg affected count", "AVG(c.affected_count)", "Average number of affected peers in the grouped result.", "number"),
+                "total_affected_count": WarehouseFieldDef("Total affected count", "COALESCE(SUM(c.affected_count), 0)", "Total affected peers counted across grouped contagion events.", "integer"),
+                "avg_peer_average_score": WarehouseFieldDef("Avg peer score", "AVG(c.peer_average_score)", "Average peer score participating in grouped contagion windows.", "number"),
+            },
+            default_dimensions=("calendar_date", "trigger_symbol", "sector_name"),
+            default_measures=("event_count", "max_risk_score", "total_affected_count"),
+            default_sort_field="max_risk_score",
+            supports_date=True,
+            supports_sector=True,
+            supports_exchange=True,
+            supports_symbol_search=True,
+            supports_min_signal=True,
+            date_sql="d.calendar_date",
+            sector_sql="sec.sector_name",
+            exchange_sql="s.exchange_code",
+            symbol_sql="s.symbol",
+            company_sql="s.company_name",
+            signal_sql="c.risk_score",
+            suggested_window_days=21,
+        ),
+        "stock_persistence": WarehouseDatasetDef(
+            key="stock_persistence",
+            label="Stock persistence summary",
+            description="Cross-session persistence view for repeat offenders, anomaly-day ratios, and durability metrics.",
+            grain="One row per stock in the stock persistence materialized view.",
+            relation="warehouse.mv_stock_persistence_summary",
+            base_sql="FROM warehouse.mv_stock_persistence_summary sp",
+            dimensions={
+                "symbol": WarehouseFieldDef("Symbol", "sp.symbol", "Stock symbol in the persistence view."),
+                "company_name": WarehouseFieldDef("Company", "sp.company_name", "Company name in the persistence view."),
+                "sector_name": WarehouseFieldDef("Sector", "sp.sector_name", "Sector classification in the persistence view."),
+            },
+            measures={
+                "tracked_symbols": WarehouseFieldDef("Tracked symbols", "COUNT(*)", "Number of symbol rows in the grouped result.", "integer"),
+                "anomaly_days": WarehouseFieldDef("Anomaly days", "COALESCE(SUM(sp.anomaly_days), 0)", "Total stock-days with anomaly activity across the grouped result.", "integer"),
+                "total_anomalies": WarehouseFieldDef("Total anomalies", "COALESCE(SUM(sp.total_anomalies), 0)", "Total anomalous minute points accumulated by the grouped result.", "integer"),
+                "avg_anomaly_day_ratio": WarehouseFieldDef("Avg anomaly-day ratio", "AVG(sp.anomaly_day_ratio)", "Average share of sessions with anomaly activity across the grouped result.", "number"),
+                "avg_anomalies_per_active_day": WarehouseFieldDef("Avg anomalies per active day", "AVG(sp.avg_anomalies_per_active_day)", "Average anomaly density on sessions where activity occurred.", "number"),
+                "recent_5_session_anomalies": WarehouseFieldDef("Recent 5-session anomalies", "COALESCE(SUM(sp.recent_5_session_anomalies), 0)", "Anomaly activity accumulated in the recent five-session window.", "integer"),
+                "peak_daily_composite_score": WarehouseFieldDef("Peak composite score", "MAX(sp.peak_daily_composite_score)", "Highest daily composite score visible inside the grouped result.", "number"),
+            },
+            default_dimensions=("symbol", "sector_name"),
+            default_measures=("total_anomalies", "avg_anomaly_day_ratio", "peak_daily_composite_score"),
+            default_sort_field="avg_anomaly_day_ratio",
+            supports_sector=True,
+            supports_symbol_search=True,
+            supports_min_signal=True,
+            sector_sql="sp.sector_name",
+            symbol_sql="sp.symbol",
+            company_sql="sp.company_name",
+            signal_sql="sp.peak_daily_composite_score",
+            suggested_window_days=None,
+        ),
+        "sector_momentum": WarehouseDatasetDef(
+            key="sector_momentum",
+            label="Sector momentum summary",
+            description="Recent-versus-prior sector regime view for identifying acceleration, cooling, and contagion drift.",
+            grain="One row per sector in the sector momentum materialized view.",
+            relation="warehouse.mv_sector_momentum_summary",
+            base_sql="FROM warehouse.mv_sector_momentum_summary sm",
+            dimensions={
+                "sector_name": WarehouseFieldDef("Sector", "sm.sector_name", "Sector represented by the momentum summary row."),
+            },
+            measures={
+                "sector_rows": WarehouseFieldDef("Rows", "COUNT(*)", "Number of grouped momentum rows.", "integer"),
+                "recent_total_anomalies": WarehouseFieldDef("Recent anomalies", "COALESCE(SUM(sm.recent_total_anomalies), 0)", "Total anomalies in the recent momentum window.", "integer"),
+                "prior_total_anomalies": WarehouseFieldDef("Prior anomalies", "COALESCE(SUM(sm.prior_total_anomalies), 0)", "Total anomalies in the prior comparison window.", "integer"),
+                "anomaly_delta": WarehouseFieldDef("Anomaly delta", "COALESCE(SUM(sm.anomaly_delta), 0)", "Recent-minus-prior anomaly change.", "number"),
+                "score_delta": WarehouseFieldDef("Score delta", "AVG(sm.score_delta)", "Recent-minus-prior composite-score change.", "number"),
+                "contagion_delta": WarehouseFieldDef("Contagion delta", "COALESCE(SUM(sm.contagion_delta), 0)", "Recent-minus-prior contagion-event change.", "number"),
+                "recent_peak_daily_composite_score": WarehouseFieldDef("Recent peak score", "MAX(sm.recent_peak_daily_composite_score)", "Highest recent daily composite score in the grouped result.", "number"),
+            },
+            default_dimensions=("sector_name",),
+            default_measures=("anomaly_delta", "score_delta", "contagion_delta"),
+            default_sort_field="anomaly_delta",
+            chart_preference="bar",
+            supports_sector=True,
+            supports_min_signal=True,
+            sector_sql="sm.sector_name",
+            signal_sql="sm.recent_peak_daily_composite_score",
+            suggested_window_days=None,
+        ),
+    }
+
+
+def _warehouse_date_bounds() -> dict[str, date | None]:
+    def _loader() -> dict[str, date | None]:
+        with pg_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    MIN(d.calendar_date) AS first_calendar_date,
+                    MAX(d.calendar_date) AS last_calendar_date
+                FROM warehouse.fact_market_day f
+                JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+                """
+            ).fetchone()
+        return {
+            "first_calendar_date": row["first_calendar_date"] if row else None,
+            "last_calendar_date": row["last_calendar_date"] if row else None,
+        }
+
+    return _cached("warehouse:query:date_bounds", 300.0, _loader)
+
+
+def _warehouse_presets(date_bounds: dict[str, date | None]) -> list[dict[str, Any]]:
+    latest_date = date_bounds.get("last_calendar_date")
+
+    def _window_start(days: int) -> str | None:
+        if latest_date is None:
+            return None
+        return (latest_date - timedelta(days=max(days - 1, 0))).isoformat()
+
+    latest_text = latest_date.isoformat() if latest_date else None
+    return [
+        {
+            "id": "sector-stress",
+            "label": "Sector stress by day",
+            "description": "Track daily sector pressure, peak scores, and contagion-linked minutes over the recent warehouse window.",
+            "request": {
+                "dataset": "sector_day",
+                "dimensions": ["calendar_date", "sector_name"],
+                "measures": ["active_minutes", "max_composite_score", "contagion_minutes"],
+                "date_from": _window_start(21),
+                "date_to": latest_text,
+                "sort_field": "max_composite_score",
+                "sort_direction": "desc",
+                "limit": 60,
+            },
+        },
+        {
+            "id": "stock-anomaly-leaders",
+            "label": "Daily stock anomaly drill-down",
+            "description": "Review the highest daily stock anomalies with sector and contagion context over the recent warehouse window.",
+            "request": {
+                "dataset": "stock_day",
+                "dimensions": ["calendar_date", "symbol", "sector_name"],
+                "measures": ["anomaly_count", "peak_composite_score", "contagion_event_count"],
+                "date_from": _window_start(14),
+                "date_to": latest_text,
+                "sort_field": "peak_composite_score",
+                "sort_direction": "desc",
+                "limit": 80,
+            },
+        },
+        {
+            "id": "minute-pressure",
+            "label": "Minute pressure scan",
+            "description": "Query minute-grain signal pressure by date, time, and sector without scanning the full warehouse horizon by default.",
+            "request": {
+                "dataset": "minute_signals",
+                "dimensions": ["calendar_date", "time_label", "sector_name"],
+                "measures": ["flagged_minutes", "peak_composite_score", "contagion_minutes"],
+                "date_from": _window_start(5),
+                "date_to": latest_text,
+                "sort_field": "peak_composite_score",
+                "sort_direction": "desc",
+                "limit": 120,
+            },
+        },
+        {
+            "id": "contagion-audit",
+            "label": "Contagion audit trail",
+            "description": "Inspect trigger symbols, affected counts, and risk scores across recent contagion windows.",
+            "request": {
+                "dataset": "contagion_events",
+                "dimensions": ["calendar_date", "trigger_symbol", "sector_name"],
+                "measures": ["event_count", "max_risk_score", "total_affected_count"],
+                "date_from": _window_start(21),
+                "date_to": latest_text,
+                "sort_field": "max_risk_score",
+                "sort_direction": "desc",
+                "limit": 60,
+            },
+        },
+        {
+            "id": "persistent-names",
+            "label": "Persistent names",
+            "description": "Find the stocks that keep reappearing across sessions rather than flashing once and disappearing.",
+            "request": {
+                "dataset": "stock_persistence",
+                "dimensions": ["symbol", "sector_name"],
+                "measures": ["total_anomalies", "avg_anomaly_day_ratio", "peak_daily_composite_score"],
+                "sort_field": "avg_anomaly_day_ratio",
+                "sort_direction": "desc",
+                "limit": 50,
+            },
+        },
+        {
+            "id": "sector-acceleration",
+            "label": "Sector acceleration",
+            "description": "Compare recent sector behavior with the prior window to identify acceleration, cooling, and contagion drift.",
+            "request": {
+                "dataset": "sector_momentum",
+                "dimensions": ["sector_name"],
+                "measures": ["anomaly_delta", "score_delta", "contagion_delta"],
+                "sort_field": "anomaly_delta",
+                "sort_direction": "desc",
+                "limit": 25,
+            },
+        },
+    ]
+
+
+def _warehouse_query_metadata() -> dict[str, Any]:
+    def _loader() -> dict[str, Any]:
+        catalog = _warehouse_query_catalog()
+        date_bounds = _warehouse_date_bounds()
+        with pg_connection() as conn:
+            sectors = [row["sector_name"] for row in conn.execute("SELECT sector_name FROM warehouse.dim_sector ORDER BY sector_name").fetchall()]
+            exchanges = [row["exchange_code"] for row in conn.execute("SELECT exchange_code FROM warehouse.dim_exchange ORDER BY exchange_code").fetchall()]
+            row_counts = {dataset.key: _relation_row_count(conn, dataset.relation) for dataset in catalog.values()}
+
+        latest_date = date_bounds.get("last_calendar_date")
+        datasets = []
+        for dataset in catalog.values():
+            default_date_from = None
+            default_date_to = None
+            if dataset.supports_date and latest_date is not None:
+                default_date_to = latest_date.isoformat()
+                if dataset.suggested_window_days:
+                    default_date_from = (latest_date - timedelta(days=max(dataset.suggested_window_days - 1, 0))).isoformat()
+
+            datasets.append(
+                {
+                    "key": dataset.key,
+                    "label": dataset.label,
+                    "description": dataset.description,
+                    "grain": dataset.grain,
+                    "row_count": row_counts.get(dataset.key, 0),
+                    "supports": {
+                        "date": dataset.supports_date,
+                        "sector": dataset.supports_sector,
+                        "exchange": dataset.supports_exchange,
+                        "symbol_search": dataset.supports_symbol_search,
+                        "min_signal": dataset.supports_min_signal,
+                    },
+                    "dimensions": [
+                        {
+                            "key": key,
+                            "label": field.label,
+                            "description": field.description,
+                            "kind": field.kind,
+                            "default_selected": key in dataset.default_dimensions,
+                        }
+                        for key, field in dataset.dimensions.items()
+                    ],
+                    "measures": [
+                        {
+                            "key": key,
+                            "label": field.label,
+                            "description": field.description,
+                            "kind": field.kind,
+                            "default_selected": key in dataset.default_measures,
+                        }
+                        for key, field in dataset.measures.items()
+                    ],
+                    "defaults": {
+                        "dimensions": list(dataset.default_dimensions),
+                        "measures": list(dataset.default_measures),
+                        "sort_field": dataset.default_sort_field,
+                        "sort_direction": dataset.default_sort_direction,
+                        "limit": dataset.default_limit,
+                        "date_from": default_date_from,
+                        "date_to": default_date_to,
+                        "suggested_window_days": dataset.suggested_window_days,
+                    },
+                }
+            )
+
+        return {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "date_window": {
+                "first_calendar_date": date_bounds.get("first_calendar_date").isoformat() if date_bounds.get("first_calendar_date") else None,
+                "last_calendar_date": latest_date.isoformat() if latest_date else None,
+            },
+            "sectors": sectors,
+            "exchanges": exchanges,
+            "datasets": datasets,
+            "presets": _warehouse_presets(date_bounds),
+        }
+
+    return _cached("warehouse:query:metadata", 300.0, _loader)
+
+
+def _warehouse_unique(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
+
+
+def _warehouse_normalize_query(request: WarehouseQueryRequest) -> dict[str, Any]:
+    catalog = _warehouse_query_catalog()
+    dataset = catalog.get(request.dataset)
+    if dataset is None:
+        raise HTTPException(status_code=400, detail="Unknown warehouse dataset")
+
+    dimensions = [key for key in _warehouse_unique(request.dimensions) if key in dataset.dimensions][:4]
+    measures = [key for key in _warehouse_unique(request.measures) if key in dataset.measures][:5]
+    if not dimensions:
+        dimensions = list(dataset.default_dimensions)
+    if not measures:
+        measures = list(dataset.default_measures)
+
+    sort_candidates = set(dimensions) | set(measures)
+    sort_field = request.sort_field if request.sort_field in sort_candidates else dataset.default_sort_field
+    if sort_field not in sort_candidates:
+        sort_field = measures[0] if measures else dimensions[0]
+
+    date_from = request.date_from
+    date_to = request.date_to
+    if date_from and date_to and date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    symbol_search = request.symbol_search.strip() if request.symbol_search else None
+
+    return {
+        "dataset": dataset,
+        "dataset_key": dataset.key,
+        "dimensions": dimensions,
+        "measures": measures,
+        "date_from": date_from,
+        "date_to": date_to,
+        "sector": request.sector.strip() if request.sector else None,
+        "exchange": request.exchange.strip() if request.exchange else None,
+        "symbol_search": symbol_search or None,
+        "min_signal": request.min_signal,
+        "sort_field": sort_field,
+        "sort_direction": "asc" if request.sort_direction == "asc" else "desc",
+        "limit": max(1, min(request.limit, 500)),
+    }
+
+
+def _warehouse_query_filters(dataset: WarehouseDatasetDef, query: dict[str, Any]) -> tuple[list[str], list[Any]]:
+    where_clauses: list[str] = []
+    params: list[Any] = []
+
+    if dataset.supports_date and dataset.date_sql and query["date_from"] is not None:
+        where_clauses.append(f"{dataset.date_sql} >= %s")
+        params.append(query["date_from"])
+    if dataset.supports_date and dataset.date_sql and query["date_to"] is not None:
+        where_clauses.append(f"{dataset.date_sql} <= %s")
+        params.append(query["date_to"])
+    if dataset.supports_sector and dataset.sector_sql and query["sector"]:
+        where_clauses.append(f"{dataset.sector_sql} = %s")
+        params.append(query["sector"])
+    if dataset.supports_exchange and dataset.exchange_sql and query["exchange"]:
+        where_clauses.append(f"{dataset.exchange_sql} = %s")
+        params.append(query["exchange"])
+    if dataset.supports_symbol_search and dataset.symbol_sql and query["symbol_search"]:
+        pattern = f"%{query['symbol_search'].upper()}%"
+        if dataset.company_sql:
+            where_clauses.append(f"(UPPER({dataset.symbol_sql}) LIKE %s OR UPPER({dataset.company_sql}) LIKE %s)")
+            params.extend([pattern, pattern])
+        else:
+            where_clauses.append(f"UPPER({dataset.symbol_sql}) LIKE %s")
+            params.append(pattern)
+    if dataset.supports_min_signal and dataset.signal_sql and query["min_signal"] is not None:
+        where_clauses.append(f"{dataset.signal_sql} >= %s")
+        params.append(query["min_signal"])
+
+    return where_clauses, params
+
+
+def _warehouse_value_sort_key(value: Any) -> float:
+    if value is None:
+        return float("-inf")
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and math.isnan(value):
+            return float("-inf")
+        return float(value)
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, date):
+        return float(datetime.combine(value, datetime.min.time(), UTC).timestamp())
+    return float("-inf")
+
+
+def _warehouse_format_value(value: Any, kind: str | None = None) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "N/A"
+        digits = 0 if kind == "integer" else 3
+        return f"{value:,.{digits}f}"
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
+def _warehouse_query_preview(dataset: WarehouseDatasetDef, query: dict[str, Any]) -> str:
+    dimension_labels = [dataset.dimensions[key].label for key in query["dimensions"]]
+    measure_labels = [dataset.measures[key].label for key in query["measures"]]
+    filters: list[str] = []
+    if query["date_from"] or query["date_to"]:
+        start = query["date_from"].isoformat() if query["date_from"] else "start"
+        end = query["date_to"].isoformat() if query["date_to"] else "latest"
+        filters.append(f"date {start} to {end}")
+    if query["sector"]:
+        filters.append(f"sector {query['sector']}")
+    if query["exchange"]:
+        filters.append(f"exchange {query['exchange']}")
+    if query["symbol_search"]:
+        filters.append(f"symbol/company matching \"{query['symbol_search']}\"")
+    if query["min_signal"] is not None:
+        filters.append(f"signal >= {query['min_signal']:.2f}")
+    filter_text = ", ".join(filters) if filters else "full available scope"
+    return (
+        f"{dataset.label} | group by {', '.join(dimension_labels)} | measure {', '.join(measure_labels)} | "
+        f"{filter_text} | sorted by {query['sort_field']} {query['sort_direction']} | limit {query['limit']}"
+    )
+
+
+def _warehouse_chart_config(dataset: WarehouseDatasetDef, query: dict[str, Any]) -> dict[str, Any] | None:
+    if not query["dimensions"] or not query["measures"]:
+        return None
+    label_key = query["dimensions"][0]
+    value_key = query["measures"][0]
+    kind = dataset.chart_preference
+    if kind == "auto":
+        kind = "line" if dataset.dimensions[label_key].kind in {"date", "time", "datetime"} else "bar"
+    return {
+        "kind": kind,
+        "label_key": label_key,
+        "value_key": value_key,
+        "title": f"{dataset.measures[value_key].label} by {dataset.dimensions[label_key].label}",
+    }
+
+
+def _warehouse_report(dataset: WarehouseDatasetDef, query: dict[str, Any], rows: list[dict[str, Any]], query_time_ms: int) -> dict[str, Any]:
+    primary_measure = query["measures"][0] if query["measures"] else None
+    dimension_keys = query["dimensions"]
+    top_row = None
+    if primary_measure and rows:
+        top_row = max(rows, key=lambda row: _warehouse_value_sort_key(row.get(primary_measure)))
+
+    scope_parts: list[str] = []
+    if query["date_from"] or query["date_to"]:
+        scope_parts.append(
+            f"{query['date_from'].isoformat() if query['date_from'] else 'start'} to {query['date_to'].isoformat() if query['date_to'] else 'latest'}"
+        )
+    if query["sector"]:
+        scope_parts.append(query["sector"])
+    if query["exchange"]:
+        scope_parts.append(query["exchange"])
+    if query["symbol_search"]:
+        scope_parts.append(f"matching {query['symbol_search']}")
+
+    highlights = [
+        {"label": "Dataset", "value": dataset.label},
+        {"label": "Rows returned", "value": str(len(rows))},
+        {"label": "Query time", "value": f"{query_time_ms} ms"},
+    ]
+    if top_row and primary_measure:
+        descriptor = " | ".join(
+            _warehouse_format_value(top_row.get(dimension_key), dataset.dimensions[dimension_key].kind)
+            for dimension_key in dimension_keys
+        ) if dimension_keys else dataset.label
+        measure_kind = dataset.measures[primary_measure].kind
+        highlights.append(
+            {
+                "label": "Top finding",
+                "value": f"{descriptor} -> {_warehouse_format_value(top_row.get(primary_measure), measure_kind)}",
+            }
+        )
+
+    findings = [
+        f"This report scans the {dataset.label.lower()} surface at the grain '{dataset.grain}'.",
+        f"It groups by {', '.join(dataset.dimensions[key].label for key in query['dimensions'])} and evaluates {', '.join(dataset.measures[key].label for key in query['measures'])}.",
+    ]
+    if top_row and primary_measure:
+        measure = dataset.measures[primary_measure]
+        descriptor = " | ".join(
+            _warehouse_format_value(top_row.get(dimension_key), dataset.dimensions[dimension_key].kind)
+            for dimension_key in dimension_keys
+        ) if dimension_keys else dataset.label
+        findings.append(
+            f"The strongest row in the current result set is {descriptor} with {measure.label.lower()} {_warehouse_format_value(top_row.get(primary_measure), measure.kind)}."
+        )
+    if scope_parts:
+        findings.append(f"The current scope is constrained to {' | '.join(scope_parts)}.")
+    if len(rows) >= query["limit"]:
+        findings.append("The result set has reached the current row limit. Raise the limit or tighten filters for a more targeted scan.")
+
+    return {
+        "headline": f"{dataset.label} report",
+        "subheadline": f"{len(rows)} rows returned from the warehouse workbench.",
+        "highlights": highlights,
+        "findings": findings,
+    }
+
+
+def _warehouse_execute_query(query: dict[str, Any]) -> dict[str, Any]:
+    dataset: WarehouseDatasetDef = query["dataset"]
+    select_parts = [f"{dataset.dimensions[key].sql} AS {key}" for key in query["dimensions"]]
+    select_parts.extend(f"{dataset.measures[key].sql} AS {key}" for key in query["measures"])
+    where_clauses, params = _warehouse_query_filters(dataset, query)
+    group_by = [dataset.dimensions[key].sql for key in query["dimensions"]]
+    order_field = query["sort_field"]
+
+    sql_parts = [
+        "SELECT",
+        "    " + ",\n    ".join(select_parts),
+        dataset.base_sql.strip(),
+    ]
+    if where_clauses:
+        sql_parts.append("WHERE " + " AND ".join(where_clauses))
+    if group_by:
+        sql_parts.append("GROUP BY " + ", ".join(group_by))
+    sql_parts.append(f"ORDER BY {order_field} {query['sort_direction'].upper()} NULLS LAST")
+    sql_parts.append("LIMIT %s")
+    params.append(query["limit"])
+    sql_text = "\n".join(sql_parts)
+
+    started = monotonic()
+    with pg_connection() as conn:
+        rows = [dict(row) for row in conn.execute(sql_text, params).fetchall()]
+    query_time_ms = int((monotonic() - started) * 1000)
+
+    columns = [
+        {
+            "key": key,
+            "label": dataset.dimensions[key].label,
+            "kind": dataset.dimensions[key].kind,
+            "role": "dimension",
+            "description": dataset.dimensions[key].description,
+        }
+        for key in query["dimensions"]
+    ]
+    columns.extend(
+        {
+            "key": key,
+            "label": dataset.measures[key].label,
+            "kind": dataset.measures[key].kind,
+            "role": "measure",
+            "description": dataset.measures[key].description,
+        }
+        for key in query["measures"]
+    )
+    metadata = _warehouse_query_metadata()
+    dataset_meta = next((item for item in metadata.get("datasets", []) if item.get("key") == dataset.key), None)
+    available_rows = int(dataset_meta.get("row_count") or 0) if isinstance(dataset_meta, dict) else 0
+
+    return {
+        "dataset": {
+            "key": dataset.key,
+            "label": dataset.label,
+            "description": dataset.description,
+            "grain": dataset.grain,
+            "available_rows": available_rows,
+        },
+        "query": {
+            "dimensions": query["dimensions"],
+            "measures": query["measures"],
+            "date_from": query["date_from"].isoformat() if query["date_from"] else None,
+            "date_to": query["date_to"].isoformat() if query["date_to"] else None,
+            "sector": query["sector"],
+            "exchange": query["exchange"],
+            "symbol_search": query["symbol_search"],
+            "min_signal": query["min_signal"],
+            "sort_field": query["sort_field"],
+            "sort_direction": query["sort_direction"],
+            "limit": query["limit"],
+            "preview": _warehouse_query_preview(dataset, query),
+        },
+        "columns": columns,
+        "rows": rows,
+        "row_count": len(rows),
+        "query_time_ms": query_time_ms,
+        "chart": _warehouse_chart_config(dataset, query),
+        "report": _warehouse_report(dataset, query, rows, query_time_ms),
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _warehouse_query_response(request: WarehouseQueryRequest) -> dict[str, Any]:
+    normalized = _warehouse_normalize_query(request)
+    cache_payload = {
+        "dataset": normalized["dataset_key"],
+        "dimensions": normalized["dimensions"],
+        "measures": normalized["measures"],
+        "date_from": normalized["date_from"].isoformat() if normalized["date_from"] else None,
+        "date_to": normalized["date_to"].isoformat() if normalized["date_to"] else None,
+        "sector": normalized["sector"],
+        "exchange": normalized["exchange"],
+        "symbol_search": normalized["symbol_search"],
+        "min_signal": normalized["min_signal"],
+        "sort_field": normalized["sort_field"],
+        "sort_direction": normalized["sort_direction"],
+        "limit": normalized["limit"],
+    }
+    cache_key = f"warehouse:query:{json.dumps(cache_payload, sort_keys=True)}"
+    return _cached(cache_key, 45.0, lambda: _warehouse_execute_query(normalized))
 
 
 @asynccontextmanager
@@ -1470,6 +2276,16 @@ def contagion_event_detail(event_id: str) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="Contagion event not found")
     return dict(row)
+
+
+@app.get("/api/warehouse/query-metadata")
+def warehouse_query_metadata() -> dict[str, Any]:
+    return _warehouse_query_metadata()
+
+
+@app.post("/api/warehouse/query")
+def warehouse_query(request: WarehouseQueryRequest) -> dict[str, Any]:
+    return _warehouse_query_response(request)
 
 
 @app.get("/api/warehouse/sector-rollups")

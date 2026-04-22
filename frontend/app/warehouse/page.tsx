@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { ExplainerCards } from "../../components/explainer-cards";
 import { LineChart } from "../../components/line-chart";
 import { StatCard } from "../../components/stat-card";
@@ -137,6 +139,17 @@ export default async function WarehousePage() {
             }
           />
         </div>
+      </section>
+
+      <section className="contentGrid quickActionsGrid">
+        <Link href="/warehouse/analyst" className="shortcutCard">
+          <p className="panelEyebrow">Advanced</p>
+          <h3 className="shortcutTitle">Analyst studio</h3>
+          <div className="shortcutMetric">{summary?.stocks_covered ?? 0} stocks</div>
+          <div className="shortcutHint">
+            Build grouped warehouse queries visually, inspect the result set, and export reports as CSV or printable PDF.
+          </div>
+        </Link>
       </section>
 
       <ExplainerCards
