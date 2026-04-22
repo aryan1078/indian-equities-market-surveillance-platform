@@ -27,6 +27,25 @@ function severityClass(value: string | null | undefined) {
   return "low";
 }
 
+function feedModeLabel(mode: string | null | undefined) {
+  if (mode === "replay") {
+    return "captured session";
+  }
+  if (mode === "live") {
+    return "live polling";
+  }
+  if (mode === "backfill") {
+    return "historical backfill";
+  }
+  if (mode === "capture_replay") {
+    return "capturing session";
+  }
+  if (mode === "hydrate_daily") {
+    return "daily hydration";
+  }
+  return mode ?? "idle";
+}
+
 export default async function OverviewPage() {
   const overview = await fetchOverview();
 
@@ -87,7 +106,7 @@ export default async function OverviewPage() {
       href: "/replay",
       eyebrow: "Operate",
       title: "Session replay",
-      metric: overview?.market_mode ?? "idle",
+      metric: feedModeLabel(overview?.market_mode),
       hint: overview?.as_of ? `Latest live bar ${formatDateTime(overview.as_of)}` : "Ready for captured-session replay",
     },
   ];
@@ -101,7 +120,7 @@ export default async function OverviewPage() {
             <h2 className="pageTitle">Market overview</h2>
           </div>
           <div className="pageMetaGroup">
-            <span className="metaTag">{overview?.market_mode ?? "idle"}</span>
+            <span className="metaTag">{feedModeLabel(overview?.market_mode)}</span>
             <span className="metaTag">{overview?.as_of ? formatDateTime(overview.as_of) : "No fresh minute"}</span>
           </div>
         </div>
@@ -113,16 +132,16 @@ export default async function OverviewPage() {
             hint={`${overview?.hydrated_symbol_count ?? 0} hydrated | ${overview?.watchlist_symbol_count ?? 0} live watchlist`}
           />
           <StatCard
-            label="Live symbols"
+            label="Intraday symbols loaded"
             value={String(overview?.live_symbol_count ?? liveMarket.length)}
-            info="Symbols that currently have a latest-session minute snapshot available in the live tape."
+            info="Symbols that currently have a loaded intraday minute snapshot available in the tape, whether it came from captured replay or live polling."
             hint={`${overview?.live_sector_count ?? 0} sectors active`}
             tone="accent"
           />
           <StatCard
-            label="Feed state"
-            value={overview?.market_mode ?? "idle"}
-            info="The ingestion mode that produced the current tape, such as captured replay, real backfill, or live collection."
+            label="Current feed mode"
+            value={feedModeLabel(overview?.market_mode)}
+            info="The source mode behind the intraday tape, such as captured session replay, historical backfill, or live polling."
             hint={overview?.as_of ? formatDateTime(overview.as_of) : "No current market bar"}
           />
           <StatCard

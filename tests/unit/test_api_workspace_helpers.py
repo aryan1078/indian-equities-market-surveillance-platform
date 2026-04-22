@@ -6,6 +6,7 @@ from api_service.main import (
     _anomaly_summary,
     _filter_latest_trading_session,
     _history_summary,
+    _overview_feed_mode,
     _resolve_alert_scope,
     _streaming_counts_from_bulk_runs,
     _system_scale_projection,
@@ -123,6 +124,15 @@ def test_filter_latest_trading_session_drops_stale_symbols():
     )
 
     assert set(filtered) == {"INFY.NS", "SBIN.NS"}
+
+
+def test_overview_feed_mode_prefers_intraday_run_over_latest_ingestion():
+    mode = _overview_feed_mode(
+        {"mode": "hydrate_daily"},
+        {"mode": "replay"},
+    )
+
+    assert mode == "replay"
 
 
 def test_resolve_alert_scope_separates_current_and_stale_open_alerts():

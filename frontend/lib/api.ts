@@ -132,6 +132,7 @@ export type AlertItem = {
 export type OverviewResponse = {
   as_of?: string | null;
   market_mode?: string | null;
+  latest_ingestion_mode?: string | null;
   live_market: LatestMarket[];
   top_anomalies: LatestAnomaly[];
   top_movers?: ScreenerItem[];

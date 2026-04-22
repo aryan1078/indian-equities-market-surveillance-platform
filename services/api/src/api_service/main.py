@@ -25,6 +25,7 @@ from market_surveillance.settings import get_settings
 
 SESSION_MINUTES_PER_DAY = 375
 TRADING_DAYS_PER_YEAR = 250
+INTRADAY_FEED_MODES = ("live", "replay", "capture_replay", "backfill")
 CACHE_MISS = object()
 
 
@@ -977,7 +978,8 @@ def _streaming_counts_from_bulk_runs(rows: list[dict[str, Any]]) -> dict[str, in
 
 
 def _load_profiles() -> dict[str, dict[str, Any]]:
-    records = {stock.symbol: stock.model_dump() for stock in load_stock_references()}
+    # User-facing universe views should reflect the currently active listed set.
+    records = {stock.symbol: stock.model_dump() for stock in load_stock_references() if stock.is_active}
     with pg_connection() as conn:
         rows = conn.execute(
             """
@@ -986,6 +988,8 @@ def _load_profiles() -> dict[str, dict[str, Any]]:
             """
         ).fetchall()
     for row in rows:
+        if row["symbol"] not in records:
+            continue
         aliases = row["aliases"]
         metadata = row["metadata"] if isinstance(row["metadata"], dict) else {}
         records[row["symbol"]] = {
@@ -1287,9 +1291,20 @@ def _recent_alerts(limit: int = 20, status: str | None = "open", scope: str = "a
     return _cached(cache_key, 15.0, _loader)
 
 
-def _latest_run(mode: str | None = None) -> dict[str, Any] | None:
-    filter_clause = "WHERE mode = %s" if mode else ""
-    params: tuple[Any, ...] = (mode,) if mode else ()
+def _latest_run(mode: str | None = None, modes: tuple[str, ...] | None = None) -> dict[str, Any] | None:
+    if mode and modes:
+        raise ValueError("Pass either mode or modes, not both")
+
+    filter_clause = ""
+    params: tuple[Any, ...] = ()
+    if mode:
+        filter_clause = "WHERE mode = %s"
+        params = (mode,)
+    elif modes:
+        placeholders = ", ".join(["%s"] * len(modes))
+        filter_clause = f"WHERE mode IN ({placeholders})"
+        params = tuple(modes)
+
     with pg_connection() as conn:
         row = conn.execute(
             f"""
@@ -1302,6 +1317,14 @@ def _latest_run(mode: str | None = None) -> dict[str, Any] | None:
             params,
         ).fetchone()
     return dict(row) if row else None
+
+
+def _overview_feed_mode(latest_run: dict[str, Any] | None, latest_intraday_run: dict[str, Any] | None) -> str | None:
+    if latest_intraday_run:
+        return str(latest_intraday_run["mode"])
+    if latest_run:
+        return str(latest_run["mode"])
+    return None
 
 
 def _system_scale_projection(
@@ -2130,12 +2153,14 @@ def overview() -> dict[str, Any]:
                 """
             ).fetchall()
         latest_run = _latest_run()
+        latest_intraday_run = _latest_run(modes=INTRADAY_FEED_MODES)
         as_of = None
         if latest_market:
             as_of = max(item["timestamp_ist"] for item in latest_market if item.get("timestamp_ist"))
         return {
             "as_of": as_of,
-            "market_mode": latest_run["mode"] if latest_run else None,
+            "market_mode": _overview_feed_mode(latest_run, latest_intraday_run),
+            "latest_ingestion_mode": latest_run["mode"] if latest_run else None,
             "live_market": latest_market,
             "top_anomalies": sorted(latest_anomalies, key=lambda item: item["composite_score"], reverse=True)[:10],
             "top_movers": _top_movers(screener["items"], limit=10),

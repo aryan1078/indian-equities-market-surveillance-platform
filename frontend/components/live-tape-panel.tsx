@@ -128,7 +128,7 @@ export function LiveTapePanel({ items }: LiveTapePanelProps) {
   const hasFilters = Boolean(query.trim()) || sector !== "all" || status !== "all" || sort !== "priority" || limit !== DEFAULT_LIMIT;
   const snapshotIsUniform = snapshot.uniqueCount <= 1;
   const activeSummary = [
-    deferredQuery ? `matching "${query.trim()}"` : "across the live universe",
+    deferredQuery ? `matching "${query.trim()}"` : "across the loaded intraday scope",
     sector !== "all" ? sector : `${sectors.length || 0} sectors`,
     status === "flagged" ? "flagged only" : status === "normal" ? "normal only" : "all states",
     sort === "score" ? "sorted by score" : sort === "volume" ? "sorted by volume" : sort === "symbol" ? "sorted alphabetically" : "priority sorted",
@@ -267,9 +267,9 @@ export function LiveTapePanel({ items }: LiveTapePanelProps) {
             onClick={() => applyPreset("all")}
             title="Default market snapshot view with priority ordering and no extra filters."
           >
-            Live default
+            Loaded default
           </button>
-          <InfoHint content="The default market snapshot ordering: flagged symbols first, then higher composite scores, with no extra filters applied." label="Live default definition" />
+          <InfoHint content="The default loaded snapshot ordering: flagged symbols first, then higher composite scores, with no extra filters applied." label="Loaded default definition" />
         </div>
         <div className="filterPillCluster">
           <button
@@ -367,7 +367,7 @@ export function LiveTapePanel({ items }: LiveTapePanelProps) {
           </table>
         </div>
       ) : (
-        <div className="emptyState">No live rows match the current tape filters.</div>
+        <div className="emptyState">No loaded intraday rows match the current tape filters.</div>
       )}
     </div>
   );

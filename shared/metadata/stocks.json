@@ -50649,8 +50649,8 @@
     "sector": "Automobile",
     "company_name": "Tata Motors",
     "country": "India",
-    "is_active": true,
-    "watchlist": true,
+    "is_active": false,
+    "watchlist": false,
     "aliases": [
       "TATAMOTORS",
       "TATA MOTORS"
@@ -50659,7 +50659,7 @@
       "source": "curated_watchlist",
       "nse_symbol": "TATAMOTORS",
       "series": "EQ",
-      "preserved_reason": "missing_from_nse_equity_list"
+      "preserved_reason": "superseded_by_tmcv_listing"
     }
   },
   {
@@ -52083,14 +52083,16 @@
   {
     "symbol": "TMCV.NS",
     "exchange": "NSE",
-    "sector": "Unknown",
+    "sector": "Automobile",
     "company_name": "Tata Motors Limited",
     "country": "India",
     "is_active": true,
-    "watchlist": false,
+    "watchlist": true,
     "aliases": [
       "TMCV",
-      "TATA MOTORS LIMITED"
+      "TATA MOTORS LIMITED",
+      "TATAMOTORS",
+      "TATA MOTORS"
     ],
     "metadata": {
       "source": "nse_equity_list",
@@ -52101,7 +52103,8 @@
       "paid_up_value": "2",
       "market_lot": "1",
       "isin": "INE1TAE01010",
-      "face_value": "2"
+      "face_value": "2",
+      "watchlist_reason": "replaces_delisted_tatamotors_symbol"
     }
   },
   {
