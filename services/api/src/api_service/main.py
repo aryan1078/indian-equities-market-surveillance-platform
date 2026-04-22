@@ -1865,8 +1865,31 @@ def system_health() -> dict[str, Any]:
     profiles = _profiles()
     history_map = _history_coverage_map()
     with pg_connection() as conn:
-        latest_etl = conn.execute(
-            "SELECT run_id, trading_date, finished_at, status FROM operational.etl_runs ORDER BY started_at DESC LIMIT 1"
+        latest_etl_attempt = conn.execute(
+            """
+            SELECT run_id, trading_date, started_at, finished_at, status, inserted_rows, aggregate_rows, notes
+            FROM operational.etl_runs
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        latest_successful_etl = conn.execute(
+            """
+            SELECT run_id, trading_date, started_at, finished_at, status, inserted_rows, aggregate_rows, notes
+            FROM operational.etl_runs
+            WHERE status = 'completed'
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        latest_failed_etl = conn.execute(
+            """
+            SELECT run_id, trading_date, started_at, finished_at, status, inserted_rows, aggregate_rows, notes
+            FROM operational.etl_runs
+            WHERE status = 'failed'
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
         ).fetchone()
         latest_ingestion = conn.execute(
             "SELECT run_id, mode, finished_at, status FROM operational.ingestion_runs ORDER BY started_at DESC LIMIT 1"
@@ -1886,7 +1909,10 @@ def system_health() -> dict[str, Any]:
         "api": "ok",
         "redis": redis.ping(),
         "last_tick": last_tick,
-        "latest_etl_run": dict(latest_etl) if latest_etl else None,
+        "latest_etl_run": dict(latest_successful_etl) if latest_successful_etl else (dict(latest_etl_attempt) if latest_etl_attempt else None),
+        "latest_etl_attempt": dict(latest_etl_attempt) if latest_etl_attempt else None,
+        "latest_successful_etl_run": dict(latest_successful_etl) if latest_successful_etl else None,
+        "latest_failed_etl_run": dict(latest_failed_etl) if latest_failed_etl else None,
         "latest_ingestion_run": dict(latest_ingestion) if latest_ingestion else None,
         "database_inventory": {
             "stock_profiles": profile_count,

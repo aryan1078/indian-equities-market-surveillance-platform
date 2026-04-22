@@ -528,12 +528,10 @@ export type SystemHealthResponse = {
   api?: string;
   redis?: boolean;
   last_tick?: string | null;
-  latest_etl_run?: {
-    run_id: string;
-    trading_date: string;
-    finished_at?: string | null;
-    status: string;
-  } | null;
+  latest_etl_run?: EtlHealthRun | null;
+  latest_etl_attempt?: EtlHealthRun | null;
+  latest_successful_etl_run?: EtlHealthRun | null;
+  latest_failed_etl_run?: EtlHealthRun | null;
   latest_ingestion_run?: {
     run_id: string;
     mode: string;
@@ -558,6 +556,17 @@ export type SystemHealthResponse = {
     webhook_type: string;
     min_severity: string;
   };
+};
+
+export type EtlHealthRun = {
+  run_id: string;
+  trading_date: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  status: string;
+  inserted_rows?: number | null;
+  aggregate_rows?: number | null;
+  notes?: Record<string, unknown> | null;
 };
 
 export type SystemScaleResponse = {

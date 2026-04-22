@@ -10,6 +10,19 @@ function displayValue(value: unknown) {
   return String(value);
 }
 
+function etlError(notes: Record<string, unknown> | null | undefined) {
+  const error = notes?.error;
+  return typeof error === "string" && error.trim() ? error : null;
+}
+
+function timestampMs(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export default async function SystemPage() {
   const [health, runs, scale] = await Promise.all([fetchSystemHealth(), fetchSystemRuns(), fetchSystemScale()]);
   const ingestionRuns = Array.isArray(runs?.ingestion_runs) ? runs.ingestion_runs : [];
@@ -20,6 +33,16 @@ export default async function SystemPage() {
   const unknownSectorCount = health?.universe_inventory?.unknown_sector_symbols ?? 0;
   const sectorCoveragePct = health?.universe_inventory?.sector_coverage_pct ?? 0;
   const coveragePct = listedCount ? `${Math.round((hydratedCount / listedCount) * 100)}%` : "0%";
+  const latestSuccessfulEtl = health?.latest_successful_etl_run ?? health?.latest_etl_run;
+  const latestEtlAttempt = health?.latest_etl_attempt ?? latestSuccessfulEtl;
+  const latestFailedEtl = health?.latest_failed_etl_run;
+  const latestSuccessfulEtlFinishedMs = timestampMs(latestSuccessfulEtl?.finished_at);
+  const latestFailedEtlFinishedMs = timestampMs(latestFailedEtl?.finished_at);
+  const hasNewerFailedAttempt =
+    latestFailedEtl?.status === "failed" &&
+    latestFailedEtlFinishedMs !== null &&
+    (latestSuccessfulEtlFinishedMs === null || latestFailedEtlFinishedMs > latestSuccessfulEtlFinishedMs);
+  const latestFailedReason = etlError(latestFailedEtl?.notes);
   const inflightTicks = Number(scale?.actual.streaming.inflight_market_ticks ?? 0);
   const inflightAnomalies = Number(scale?.actual.streaming.inflight_anomaly_metrics ?? 0);
   const storeFootprint = scale
@@ -99,6 +122,28 @@ export default async function SystemPage() {
         <div className="statsGrid">
           <StatCard label="Last tick" value={formatDateTime(health?.last_tick)} info="The latest market timestamp observed by the operational pipeline." />
           <StatCard
+            label="Warehouse load"
+            value={latestSuccessfulEtl?.trading_date ?? "Unavailable"}
+            info="The most recent successful ETL load that completed and is safe to treat as the warehouse freshness marker."
+            hint={
+              latestSuccessfulEtl?.finished_at
+                ? `${formatDateTime(latestSuccessfulEtl.finished_at)} | ${displayValue(latestSuccessfulEtl.inserted_rows)} inserted`
+                : "No completed ETL load recorded"
+            }
+            tone="accent"
+          />
+          <StatCard
+            label="Last ETL attempt"
+            value={latestEtlAttempt?.status ?? "N/A"}
+            info="The most recent ETL attempt, whether it succeeded or failed. This separates maintenance retries from the last trusted warehouse load."
+            hint={
+              latestEtlAttempt?.trading_date
+                ? `${latestEtlAttempt.trading_date} | ${formatDateTime(latestEtlAttempt.finished_at)}`
+                : "No ETL attempt recorded"
+            }
+            tone={latestEtlAttempt?.status === "failed" ? "warning" : "accent"}
+          />
+          <StatCard
             label="Materialized rows"
             value={formatCompactIndian(scale?.actual.materialized_total_rows, 2)}
             info="The total rows currently materialized across PostgreSQL, Cassandra-derived counts, and Redis-backed live state."
@@ -149,6 +194,23 @@ export default async function SystemPage() {
             }
             tone={health?.notifications?.webhook_enabled ? "accent" : "default"}
           />
+        </div>
+      </section>
+
+      <section className="surface">
+        <div className={`statusNote ${hasNewerFailedAttempt ? "warning" : "success"}`}>
+          {hasNewerFailedAttempt ? (
+            <>
+              The warehouse is currently healthy through {latestSuccessfulEtl?.trading_date ?? "the last successful load"}.
+              The most recent ETL attempt for {latestFailedEtl?.trading_date ?? "a later date"} failed after that successful load
+              {latestFailedReason ? `: ${latestFailedReason}.` : "."}
+            </>
+          ) : (
+            <>
+              The latest successful warehouse load is {latestSuccessfulEtl?.trading_date ?? "not available"} and the latest ETL attempt is{" "}
+              {latestEtlAttempt?.status ?? "unavailable"}.
+            </>
+          )}
         </div>
       </section>
 

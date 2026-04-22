@@ -95,6 +95,7 @@ export default async function ProcessPage() {
       (run) => readString(asRecord(run), "mode") === "replay" && readString(asRecord(run), "status") === "completed",
     ) ?? undefined;
   const latestSuccessfulEtlRun = etlRuns.find((run) => readString(asRecord(run), "status") === "completed");
+  const latestEtlAttempt = health?.latest_etl_attempt;
 
   const backfillNotes = asRecord(runField(latestBackfillRun, "notes"));
   const replayNotes = asRecord(runField(latestReplayRun, "notes")) ?? asRecord(replay?.notes);
@@ -145,7 +146,7 @@ export default async function ProcessPage() {
     ? intradayRows.reduce((sum, row) => sum + row.distinct_stocks, 0) / intradayRows.length
     : 0;
 
-  const latestEtlFailed = health?.latest_etl_run?.status === "failed";
+  const latestEtlFailed = latestEtlAttempt?.status === "failed";
 
   const quickLinks = [
     {
@@ -975,7 +976,7 @@ export default async function ProcessPage() {
         <section className="surface">
           <div className="statusNote warning">
             The latest ETL attempt recorded in system health is a failed maintenance rerun for{" "}
-            {health?.latest_etl_run?.trading_date ? formatDate(health.latest_etl_run.trading_date) : "an unknown date"}.
+            {latestEtlAttempt?.trading_date ? formatDate(latestEtlAttempt.trading_date) : "an unknown date"}.
             The warehouse itself remains populated through{" "}
             {summary?.last_calendar_date ? formatDate(summary.last_calendar_date) : "the current loaded horizon"}, and the most recent successful ETL load inserted{" "}
             {formatCompactIndian(latestCompletedEtlRows, 2)} rows for{" "}
