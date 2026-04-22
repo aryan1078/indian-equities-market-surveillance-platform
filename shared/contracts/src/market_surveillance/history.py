@@ -11,7 +11,7 @@ import yfinance as yf
 
 from .db import pg_connection
 from .market_data import download_market_frames, preferred_market_data_provider
-from .metadata import StockReference, load_stock_references, valid_peer_sector
+from .metadata import StockReference, load_stock_references, valid_peer_sector, watchlist_symbols
 from .settings import get_settings
 
 
@@ -237,6 +237,83 @@ def hydrate_daily_history(symbols: Iterable[str] | None = None, period: str | No
         if pause_seconds:
             time.sleep(pause_seconds)
     return results
+
+
+def significant_intraday_symbols(
+    limit: int | None = None,
+    lookback_sessions: int | None = None,
+) -> list[str]:
+    settings = get_settings()
+    target_size = max(limit or settings.intraday_default_universe_size, 1)
+    lookback = max(lookback_sessions or settings.intraday_ranking_lookback_sessions, 1)
+    references = [stock for stock in load_stock_references() if stock.is_active]
+    if not references:
+        return []
+
+    active_lookup = {stock.symbol: stock for stock in references}
+    ordered_symbols: list[str] = []
+    seen: set[str] = set()
+
+    def push(symbol: str) -> None:
+        if symbol not in active_lookup or symbol in seen:
+            return
+        seen.add(symbol)
+        ordered_symbols.append(symbol)
+
+    # Keep the curated watchlist included, but let recent liquidity decide the broad scope.
+    for symbol in watchlist_symbols():
+        push(symbol)
+
+    try:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                WITH recent_dates AS (
+                    SELECT trading_date
+                    FROM (
+                        SELECT DISTINCT trading_date
+                        FROM operational.stock_daily_bars
+                    ) dates
+                    ORDER BY trading_date DESC
+                    LIMIT %s
+                ),
+                ranked_daily AS (
+                    SELECT
+                        b.symbol,
+                        COUNT(*) AS session_count,
+                        AVG(b.close * GREATEST(b.volume, 0)) AS avg_traded_value,
+                        AVG(GREATEST(b.volume, 0)) AS avg_volume,
+                        MAX(b.trading_date) AS latest_trading_date
+                    FROM operational.stock_daily_bars b
+                    JOIN recent_dates d ON d.trading_date = b.trading_date
+                    GROUP BY b.symbol
+                )
+                SELECT symbol
+                FROM ranked_daily
+                ORDER BY
+                    avg_traded_value DESC NULLS LAST,
+                    avg_volume DESC NULLS LAST,
+                    session_count DESC,
+                    latest_trading_date DESC,
+                    symbol ASC
+                LIMIT %s
+                """,
+                (lookback, target_size * 4),
+            ).fetchall()
+    except Exception:
+        rows = []
+
+    for row in rows:
+        push(str(row["symbol"]))
+        if len(ordered_symbols) >= target_size:
+            return ordered_symbols[:target_size]
+
+    for stock in references:
+        push(stock.symbol)
+        if len(ordered_symbols) >= target_size:
+            break
+
+    return ordered_symbols[:target_size]
 
 
 def _history_state(symbol: str) -> tuple[int, date | None]:

@@ -107,6 +107,54 @@ def _yfinance_interval(interval: str) -> str:
     return normalized
 
 
+def _chunked_symbols(symbols: list[str], batch_size: int) -> list[list[str]]:
+    unique_symbols = list(dict.fromkeys(symbols))
+    chunk_size = max(batch_size, 1)
+    return [unique_symbols[index : index + chunk_size] for index in range(0, len(unique_symbols), chunk_size)]
+
+
+def _extract_yfinance_frames(payload: pd.DataFrame, symbols: list[str]) -> dict[str, pd.DataFrame]:
+    extracted: dict[str, pd.DataFrame] = {}
+    if payload is None or payload.empty:
+        return extracted
+
+    if isinstance(payload.columns, pd.MultiIndex):
+        level_zero = {str(value) for value in payload.columns.get_level_values(0)}
+        level_one = {str(value) for value in payload.columns.get_level_values(1)}
+
+        if any(symbol in level_zero for symbol in symbols):
+            for symbol in symbols:
+                if symbol not in level_zero:
+                    continue
+                try:
+                    frame = payload[symbol]
+                except Exception:
+                    continue
+                normalized = _normalize_downloaded_frame(frame)
+                if not normalized.empty:
+                    extracted[symbol] = normalized
+            return extracted
+
+        if any(symbol in level_one for symbol in symbols):
+            for symbol in symbols:
+                if symbol not in level_one:
+                    continue
+                try:
+                    frame = payload.xs(symbol, axis=1, level=1)
+                except Exception:
+                    continue
+                normalized = _normalize_downloaded_frame(frame)
+                if not normalized.empty:
+                    extracted[symbol] = normalized
+            return extracted
+
+    if symbols:
+        normalized = _normalize_downloaded_frame(payload)
+        if not normalized.empty:
+            extracted[symbols[0]] = normalized
+    return extracted
+
+
 def _download_yfinance_frames(
     symbols: list[str],
     interval: str,
@@ -116,26 +164,45 @@ def _download_yfinance_frames(
 ) -> dict[str, ProviderFrame]:
     frames: dict[str, ProviderFrame] = {}
     yf_interval = _yfinance_interval(interval)
-    for symbol in symbols:
-        kwargs: dict[str, object] = {
-            "tickers": symbol,
-            "interval": yf_interval,
-            "auto_adjust": False,
-            "progress": False,
-            "threads": False,
-        }
-        if start_date or end_date:
-            if start_date:
-                kwargs["start"] = start_date.isoformat()
-            if end_date:
-                kwargs["end"] = (end_date + timedelta(days=1)).isoformat()
-        else:
-            kwargs["period"] = period or ("5d" if is_intraday_interval(interval) else "3mo")
-        payload = yf.download(**kwargs)
-        frame = _normalize_downloaded_frame(payload)
-        if frame.empty:
-            continue
-        frames[symbol] = ProviderFrame(symbol=symbol, provider="yfinance", interval=interval, frame=frame)
+    settings = get_settings()
+    base_kwargs: dict[str, object] = {
+        "interval": yf_interval,
+        "auto_adjust": False,
+        "progress": False,
+        "threads": False,
+    }
+    if start_date or end_date:
+        if start_date:
+            base_kwargs["start"] = start_date.isoformat()
+        if end_date:
+            base_kwargs["end"] = (end_date + timedelta(days=1)).isoformat()
+    else:
+        base_kwargs["period"] = period or ("5d" if is_intraday_interval(interval) else "3mo")
+
+    for chunk in _chunked_symbols(symbols, settings.market_data_batch_size):
+        chunk_kwargs = {**base_kwargs, "tickers": " ".join(chunk)}
+        if len(chunk) > 1:
+            chunk_kwargs["group_by"] = "ticker"
+        try:
+            payload = yf.download(**chunk_kwargs)
+        except Exception:
+            payload = pd.DataFrame()
+
+        extracted = _extract_yfinance_frames(payload, chunk)
+        for symbol, frame in extracted.items():
+            frames[symbol] = ProviderFrame(symbol=symbol, provider="yfinance", interval=interval, frame=frame)
+
+        missing_symbols = [symbol for symbol in chunk if symbol not in extracted]
+        for symbol in missing_symbols:
+            single_kwargs = {**base_kwargs, "tickers": symbol}
+            try:
+                payload = yf.download(**single_kwargs)
+            except Exception:
+                continue
+            frame = _normalize_downloaded_frame(payload)
+            if frame.empty:
+                continue
+            frames[symbol] = ProviderFrame(symbol=symbol, provider="yfinance", interval=interval, frame=frame)
     return frames
 
 
@@ -269,4 +336,3 @@ def download_market_frames(
     if provider_name == "upstox":
         return _download_upstox_frames(symbols, interval, period=period, start_date=start_date, end_date=end_date)
     return _download_yfinance_frames(symbols, interval, period=period, start_date=start_date, end_date=end_date)
-

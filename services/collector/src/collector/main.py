@@ -12,7 +12,7 @@ import pandas as pd
 
 from market_surveillance.bootstrap import ensure_runtime_dirs
 from market_surveillance.db import get_cassandra_session, get_redis, pg_connection
-from market_surveillance.history import hydrate_daily_history, sync_metadata_profiles
+from market_surveillance.history import hydrate_daily_history, significant_intraday_symbols, sync_metadata_profiles
 from market_surveillance.market_data import download_market_frames, is_intraday_interval, is_real_source, preferred_market_data_provider
 from market_surveillance.market_time import as_market_time, ensure_utc, in_market_hours
 from market_surveillance.messaging import build_producer
@@ -104,7 +104,7 @@ def annotate_ingestion_run(run_id: str, notes: dict[str, object]) -> None:
 
 
 def demo_symbols() -> list[str]:
-    return watchlist_symbols()
+    return significant_intraday_symbols()
 
 
 def universe_symbols() -> list[str]:

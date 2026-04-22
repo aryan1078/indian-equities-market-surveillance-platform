@@ -55,8 +55,8 @@ export default async function StocksPage() {
           <StatCard
             label="Watchlist"
             value={String(reference?.watchlist_count ?? listed.filter((item) => item.watchlist).length)}
-            info="The curated subset prioritized for demos, replay stories, and the operator-facing live experience."
-            hint="Default live and replay universe"
+            info="The curated subset pinned for presentation, quick demos, and leader-name comparisons inside the broader ranked intraday universe."
+            hint="Always included first in the ranked intraday scope"
           />
           <StatCard
             label="Streaming rows"

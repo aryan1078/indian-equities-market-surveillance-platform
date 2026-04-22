@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     daily_history_batch_size: int = Field(default=40, alias="DAILY_HISTORY_BATCH_SIZE")
     daily_history_pause_seconds: float = Field(default=0.2, alias="DAILY_HISTORY_PAUSE_SECONDS")
     stock_history_days: int = Field(default=45, alias="STOCK_HISTORY_DAYS")
+    intraday_default_universe_size: int = Field(default=500, alias="INTRADAY_DEFAULT_UNIVERSE_SIZE")
+    intraday_ranking_lookback_sessions: int = Field(default=20, alias="INTRADAY_RANKING_LOOKBACK_SESSIONS")
+    market_data_batch_size: int = Field(default=50, alias="MARKET_DATA_BATCH_SIZE")
     live_poll_seconds: int = Field(default=60, alias="LIVE_POLL_SECONDS")
     live_interval: str = Field(default="1m", alias="LIVE_INTERVAL")
 

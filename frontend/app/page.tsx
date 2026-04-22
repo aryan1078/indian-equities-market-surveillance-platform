@@ -129,7 +129,7 @@ export default async function OverviewPage() {
             label="Tracked universe"
             value={String(overview?.tracked_symbol_count ?? 0)}
             info="All symbols currently present in the monitored reference universe, whether or not they are actively flagged."
-            hint={`${overview?.hydrated_symbol_count ?? 0} hydrated | ${overview?.watchlist_symbol_count ?? 0} live watchlist`}
+            hint={`${overview?.hydrated_symbol_count ?? 0} hydrated | ${overview?.live_symbol_count ?? liveMarket.length} intraday loaded`}
           />
           <StatCard
             label="Intraday symbols loaded"
