@@ -7,6 +7,7 @@ import { StatCard } from "../../components/stat-card";
 import {
   fetchMethodology,
   fetchReplayStatus,
+  fetchStockWorkspace,
   fetchSystemHealth,
   fetchSystemRuns,
   fetchSystemScale,
@@ -19,6 +20,7 @@ import {
   formatCompactIndian,
   formatDate,
   formatDateTime,
+  formatPercent,
   formatNumber,
   shortId,
 } from "../../lib/format";
@@ -70,12 +72,17 @@ function durationLabel(start: string | null | undefined, end: string | null | un
   return `${hours}h ${minutes}m`;
 }
 
+function jsonPreview(value: unknown) {
+  return JSON.stringify(value, null, 2);
+}
+
 function runField(run: SystemRun | undefined, key: string) {
   return asRecord(run)?.[key];
 }
 
 export default async function ProcessPage() {
-  const [health, scale, summary, replay, runs, methodology, intradayProfile] = await Promise.all([
+  const exampleSymbol = "AXISBANK.NS";
+  const [health, scale, summary, replay, runs, methodology, intradayProfile, exampleWorkspace] = await Promise.all([
     fetchSystemHealth(),
     fetchSystemScale(),
     fetchWarehouseSummary(),
@@ -83,6 +90,7 @@ export default async function ProcessPage() {
     fetchSystemRuns(),
     fetchMethodology(),
     fetchWarehouseIntradayProfile(375),
+    fetchStockWorkspace(exampleSymbol, 20).catch(() => null),
   ]);
 
   const ingestionRuns = Array.isArray(runs?.ingestion_runs) ? runs.ingestion_runs : [];
@@ -551,6 +559,221 @@ export default async function ProcessPage() {
     },
   ];
 
+  const exampleTickIndex =
+    exampleWorkspace?.ticks.findIndex((tick) => tick.timestamp_ist === "2026-04-20T15:12:00+05:30") ?? -1;
+  const exampleTick =
+    exampleTickIndex >= 0 ? exampleWorkspace?.ticks[exampleTickIndex] : (exampleWorkspace?.ticks.at(-1) ?? null);
+  const examplePrevTick =
+    exampleTickIndex > 0
+      ? exampleWorkspace?.ticks[exampleTickIndex - 1]
+      : (exampleWorkspace?.ticks.at(-2) ?? null);
+  const exampleAnomaly =
+    (exampleTick
+      ? exampleWorkspace?.anomalies.find((point) => point.timestamp_ist === exampleTick.timestamp_ist)
+      : null) ??
+    exampleWorkspace?.anomalies.find((point) => point.is_anomalous) ??
+    null;
+  const exampleReturnPct =
+    exampleTick && examplePrevTick ? ((exampleTick.close - examplePrevTick.close) / examplePrevTick.close) * 100 : null;
+  const priceWeight = methodology?.anomaly.composite_weights.price_z ?? 0.6;
+  const volumeWeight = methodology?.anomaly.composite_weights.volume_z ?? 0.4;
+  const exampleCompositeRebuild = exampleAnomaly
+    ? priceWeight * Math.abs(exampleAnomaly.price_z_score) + volumeWeight * Math.abs(exampleAnomaly.volume_z_score)
+    : null;
+  const exampleFlagReasons: string[] = [];
+  if (exampleAnomaly) {
+    if (Math.abs(exampleAnomaly.price_z_score) >= (methodology?.anomaly.price_z_threshold ?? Infinity)) {
+      exampleFlagReasons.push(`|price z| >= ${formatNumber(methodology?.anomaly.price_z_threshold, 2)}`);
+    }
+    if (Math.abs(exampleAnomaly.volume_z_score) >= (methodology?.anomaly.volume_z_threshold ?? Infinity)) {
+      exampleFlagReasons.push(`|volume z| >= ${formatNumber(methodology?.anomaly.volume_z_threshold, 2)}`);
+    }
+    if ((exampleCompositeRebuild ?? 0) >= (methodology?.anomaly.composite_threshold ?? Infinity)) {
+      exampleFlagReasons.push(`composite >= ${formatNumber(methodology?.anomaly.composite_threshold, 2)}`);
+    }
+  }
+  const exampleFlagReason = exampleFlagReasons.length
+    ? exampleFlagReasons.join(" | ")
+    : "No threshold breach persisted for the selected minute";
+  const exampleContagionAlert =
+    exampleWorkspace?.alerts.find((alert) => alert.event_category === "contagion" && !alert.is_stale) ?? null;
+  const exampleAlertRecord = asRecord(exampleContagionAlert);
+  const exampleContagionPayload = asRecord(exampleAlertRecord ? exampleAlertRecord["event_payload"] : null);
+  const exampleContagionSector = readString(exampleContagionPayload, "sector");
+  const exampleContagionPeers = Array.isArray(exampleContagionPayload?.affected_symbols)
+    ? exampleContagionPayload.affected_symbols.filter((value): value is string => typeof value === "string")
+    : [];
+  const exampleNormalizedEvent = exampleTick
+    ? {
+        symbol: exampleWorkspace?.reference.symbol ?? exampleSymbol,
+        company_name: exampleWorkspace?.reference.company_name ?? "Axis Bank",
+        exchange: exampleWorkspace?.reference.exchange ?? "NSE",
+        sector: exampleWorkspace?.reference.sector ?? "Banking",
+        timestamp_utc: exampleTick.timestamp_utc,
+        timestamp_ist: exampleTick.timestamp_ist,
+        trading_date: exampleWorkspace?.latest_market?.trading_date ?? exampleTick.timestamp_ist.slice(0, 10),
+        interval: "1m",
+        open: exampleTick.open,
+        high: exampleTick.high,
+        low: exampleTick.low,
+        close: exampleTick.close,
+        volume: exampleTick.volume,
+        dividends: exampleTick.dividends,
+        stock_splits: exampleTick.stock_splits,
+        source: backfillProvider,
+        ingestion_run_id: readString(asRecord(latestBackfillRun), "run_id"),
+        dedupe_key: `${exampleWorkspace?.reference.symbol ?? exampleSymbol}|${exampleTick.timestamp_utc}|1m`,
+      }
+    : null;
+  const exampleAnomalyPayload = exampleAnomaly
+    ? {
+        symbol: exampleWorkspace?.reference.symbol ?? exampleSymbol,
+        timestamp_ist: exampleAnomaly.timestamp_ist,
+        return_pct: exampleReturnPct,
+        price_z_score: exampleAnomaly.price_z_score,
+        volume_z_score: exampleAnomaly.volume_z_score,
+        composite_score: exampleAnomaly.composite_score,
+        composite_rebuilt: exampleCompositeRebuild,
+        thresholds: {
+          price_z: methodology?.anomaly.price_z_threshold,
+          volume_z: methodology?.anomaly.volume_z_threshold,
+          composite: methodology?.anomaly.composite_threshold,
+        },
+        is_anomalous: exampleAnomaly.is_anomalous,
+        breach_reason: exampleFlagReason,
+        explainability: exampleAnomaly.explainability,
+        writes: ["cassandra.anomaly_metrics", "redis.latest_anomaly_snapshot"],
+      }
+    : null;
+  const exampleWarehousePayload = {
+    fact_anomaly_minute: exampleAnomaly
+      ? {
+          stock: exampleWorkspace?.reference.symbol ?? exampleSymbol,
+          calendar_date: exampleWorkspace?.latest_market?.trading_date ?? exampleAnomaly.timestamp_ist.slice(0, 10),
+          time_label: "15:12",
+          composite_score: exampleAnomaly.composite_score,
+          price_z_score: exampleAnomaly.price_z_score,
+          volume_z_score: exampleAnomaly.volume_z_score,
+          is_anomalous: exampleAnomaly.is_anomalous,
+        }
+      : null,
+    fact_market_day: {
+      stock: exampleWorkspace?.reference.symbol ?? exampleSymbol,
+      calendar_date: exampleWorkspace?.latest_market?.trading_date ?? null,
+      close: exampleWorkspace?.latest_market?.close ?? null,
+      anomaly_count: exampleWorkspace?.anomaly_summary.flagged_count ?? 0,
+      peak_composite_score: exampleWorkspace?.anomaly_summary.peak_composite_score ?? null,
+      volume_ratio_20d: exampleWorkspace?.indicators.volume_ratio_20d ?? null,
+    },
+    fact_surveillance_coverage: {
+      stock: exampleWorkspace?.reference.symbol ?? exampleSymbol,
+      calendar_date: exampleWorkspace?.latest_market?.trading_date ?? null,
+      monitored: true,
+      session_minutes_observed: methodology?.market.session_minutes ?? 375,
+    },
+    downstream_views: [
+      "mv_stock_signal_leaders",
+      "mv_stock_persistence_summary",
+      "mv_sector_daily_summary",
+      "mv_intraday_pressure_profile",
+    ],
+  };
+  const exampleLineage = [
+    {
+      step: "A1",
+      title: "Raw provider minute bar",
+      meta: exampleTick?.timestamp_ist ? `${formatDateTime(exampleTick.timestamp_ist)} IST` : "Example minute",
+      detail: "Provider output still looks like a market row: OHLCV plus dividends and stock-split columns.",
+      facts: [
+        `${exampleWorkspace?.reference.symbol ?? exampleSymbol} | ${exampleWorkspace?.reference.company_name ?? "Axis Bank"}`,
+        `Close ${formatNumber(exampleTick?.close, 2)} | Volume ${(exampleTick?.volume ?? 0).toLocaleString("en-IN")}`,
+        `Corporate actions preserved: dividends ${formatNumber(exampleTick?.dividends, 2)} | splits ${formatNumber(exampleTick?.stock_splits, 2)}`,
+      ],
+    },
+    {
+      step: "A2",
+      title: "Canonical Kafka event",
+      meta: shortId(readString(asRecord(latestBackfillRun), "run_id")),
+      detail: "Normalization adds symbol metadata, UTC and IST timestamps, trading date, interval, source, and dedupe identity.",
+      facts: [
+        `Trading date ${(exampleWorkspace?.latest_market?.trading_date ?? "N/A")}`,
+        `Dedupe key ${(exampleNormalizedEvent?.dedupe_key ?? "N/A")}`,
+        `Source ${backfillProvider} | exchange ${exampleWorkspace?.reference.exchange ?? "NSE"}`,
+      ],
+    },
+    {
+      step: "A3",
+      title: "Streaming anomaly decision",
+      meta: exampleAnomaly?.is_anomalous ? "Flagged minute" : "Normal minute",
+      detail: "Redis-backed state compares the new minute against the rolling baseline using EWMA-derived z-scores and the composite rule.",
+      facts: [
+        `Return ${formatPercent(exampleReturnPct, 5)}`,
+        `Price z ${formatNumber(exampleAnomaly?.price_z_score, 3)} | volume z ${formatNumber(exampleAnomaly?.volume_z_score, 3)}`,
+        exampleFlagReason,
+      ],
+    },
+    {
+      step: "A4",
+      title: "Operational persistence",
+      meta: `${formatCompactIndian(Number(scale?.actual.streaming.anomaly_metrics ?? 0), 2)} anomaly rows`,
+      detail: "The minute-level signal lands in Cassandra and updates live API state; if severity and cooldown rules allow, an operator alert row is also persisted.",
+      facts: [
+        "Writes: cassandra.anomaly_metrics + redis latest snapshot",
+        `Alert cooldown ${methodology?.alerts.cooldown_minutes ?? 10} minutes`,
+        `Notification floor ${methodology?.alerts.notification_min_severity ?? "high"}`,
+      ],
+    },
+    {
+      step: "A5",
+      title: "Warehouse lineage",
+      meta: `${summary?.trading_days_loaded ?? 0} trading days loaded`,
+      detail: "ETL turns the operational minute into keyed fact rows and refreshes the historical views that power analyst-facing reports.",
+      facts: [
+        `fact_anomaly_minute + fact_market_day + fact_surveillance_coverage`,
+        `${formatCompactIndian(latestCompletedEtlRows, 2)} rows inserted in latest successful ETL`,
+        `Queryable through /warehouse and Analyst Studio`,
+      ],
+    },
+  ];
+  const analystQuestions = [
+    {
+      question: "Which sector accelerated its stress profile most recently?",
+      source: "mv_sector_momentum_summary",
+      grain: "sector x recent window versus prior window",
+      outcome: "Ranks sectors by anomaly, score-intensity, and contagion acceleration.",
+    },
+    {
+      question: "Which stocks keep reappearing as surveillance outliers?",
+      source: "mv_stock_persistence_summary + mv_stock_signal_leaders",
+      grain: "stock x cross-session persistence",
+      outcome: "Surfaces repeat offenders, anomaly-day ratios, and latest peak scores.",
+    },
+    {
+      question: "What part of the trading day usually concentrates pressure?",
+      source: "mv_intraday_pressure_profile",
+      grain: "IST minute bucket across sessions",
+      outcome: "Shows hotspot minutes, average composite load, and contagion density.",
+    },
+    {
+      question: "Which propagation windows were strongest in Banking on 20 Apr?",
+      source: "fact_contagion_event + mv_sector_regime_summary",
+      grain: "event-level contagion with sector regime context",
+      outcome: "Explains trigger symbol, peer confirmations, risk score, and sector pressure context.",
+    },
+    {
+      question: "Was a stock monitored even when nothing triggered?",
+      source: "fact_surveillance_coverage",
+      grain: "stock x session monitoring ledger",
+      outcome: "Proves coverage and avoids confusing lack of alerts with lack of observation.",
+    },
+    {
+      question: "How does an analyst export this story?",
+      source: "Warehouse Analyst Studio",
+      grain: "curated report over allowlisted warehouse datasets",
+      outcome: "Builds charts, result tables, and a printable PDF-ready report from the same facts.",
+    },
+  ];
+
   return (
     <>
       <section className="heroPanel">
@@ -669,6 +892,216 @@ export default async function ProcessPage() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="surface">
+        <div className="panelHeader">
+          <div>
+            <p className="panelEyebrow">Figure 1A</p>
+            <h3 className="panelTitle">One real market minute as it travels through the stack</h3>
+          </div>
+          <span className="panelMeta">
+            {exampleWorkspace?.reference.company_name ?? exampleSymbol} | {exampleTick?.timestamp_ist ? formatDateTime(exampleTick.timestamp_ist) : "Example minute"}
+          </span>
+        </div>
+        <div className="statusNote">
+          This specimen uses a real AXISBANK minute from {exampleTick?.timestamp_ist ? formatDate(exampleTick.timestamp_ist) : "the loaded session"} to show
+          the exact shape changes across the system: provider row, canonical event, anomaly decision, operational persistence, and warehouse lineage.
+        </div>
+        <div className="stageDiagram">
+          {exampleLineage.map((stage, index) => (
+            <div key={stage.step} className="stageDiagramItem">
+              <article className="stageNode">
+                <div className="stageNodeTop">
+                  <span className="stageNodeStep">{stage.step}</span>
+                  <span className="stageNodeMeta">{stage.meta}</span>
+                </div>
+                <h4 className="stageNodeTitle">{stage.title}</h4>
+                <p className="stageNodeDetail">{stage.detail}</p>
+                <ul className="stageFactList">
+                  {stage.facts.map((fact) => (
+                    <li key={`${stage.step}-${fact}`}>{fact}</li>
+                  ))}
+                </ul>
+              </article>
+              {index < exampleLineage.length - 1 ? (
+                <div className="stageConnector" aria-hidden="true">
+                  <span>→</span>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="contentGrid twoUp">
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Figure 1B</p>
+              <h3 className="panelTitle">Specimen record transformation</h3>
+            </div>
+            <span className="panelMeta">Raw row versus canonical event contract</span>
+          </div>
+          <div className="codeCompareGrid">
+            <div className="codeCard">
+              <div className="codeCardHeader">
+                <strong>Provider row</strong>
+                <span>Unnormalized minute bar</span>
+              </div>
+              <pre className="codeBlock">{jsonPreview(exampleTick)}</pre>
+            </div>
+            <div className="codeCard">
+              <div className="codeCardHeader">
+                <strong>Canonical event</strong>
+                <span>Published to Kafka</span>
+              </div>
+              <pre className="codeBlock">{jsonPreview(exampleNormalizedEvent)}</pre>
+            </div>
+          </div>
+          <div className="figureCaption">
+            The collector adds the business identity and audit fields that downstream consumers need: symbol, exchange, sector, UTC and IST timestamps, trading date,
+            interval, source, run ID, and a deterministic dedupe key.
+          </div>
+        </article>
+
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Figure 1C</p>
+              <h3 className="panelTitle">Why this minute was flagged</h3>
+            </div>
+            <span className="panelMeta">Anomaly math on the same specimen</span>
+          </div>
+          <div className="mathCardGrid">
+            <div className="mathCard">
+              <span className="mathLabel">Prev close</span>
+              <strong>{formatNumber(examplePrevTick?.close, 4)}</strong>
+              <small>{examplePrevTick?.timestamp_ist ? formatDateTime(examplePrevTick.timestamp_ist) : "Previous minute"}</small>
+            </div>
+            <div className="mathCard accent">
+              <span className="mathLabel">Return %</span>
+              <strong>{formatPercent(exampleReturnPct, 5)}</strong>
+              <small>(({formatNumber(exampleTick?.close, 4)} - {formatNumber(examplePrevTick?.close, 4)}) / prev close) * 100</small>
+            </div>
+            <div className="mathCard">
+              <span className="mathLabel">Price z</span>
+              <strong>{formatNumber(exampleAnomaly?.price_z_score, 3)}</strong>
+              <small>Threshold {formatNumber(methodology?.anomaly.price_z_threshold, 2)}</small>
+            </div>
+            <div className="mathCard warning">
+              <span className="mathLabel">Volume z</span>
+              <strong>{formatNumber(exampleAnomaly?.volume_z_score, 3)}</strong>
+              <small>Threshold {formatNumber(methodology?.anomaly.volume_z_threshold, 2)}</small>
+            </div>
+            <div className="mathCard critical">
+              <span className="mathLabel">Composite</span>
+              <strong>{formatNumber(exampleCompositeRebuild, 3)}</strong>
+              <small>
+                {formatNumber(priceWeight, 1)}*|price z| + {formatNumber(volumeWeight, 1)}*|volume z|
+              </small>
+            </div>
+            <div className={`mathCard ${exampleAnomaly?.is_anomalous ? "success" : ""}`}>
+              <span className="mathLabel">Decision</span>
+              <strong>{exampleAnomaly?.is_anomalous ? "Persisted anomaly" : "No persisted anomaly"}</strong>
+              <small>{exampleFlagReason}</small>
+            </div>
+          </div>
+          <div className="codeCard compact">
+            <div className="codeCardHeader">
+              <strong>Anomaly payload</strong>
+              <span>Written to Cassandra + Redis</span>
+            </div>
+            <pre className="codeBlock">{jsonPreview(exampleAnomalyPayload)}</pre>
+          </div>
+        </article>
+      </section>
+
+      <section className="contentGrid twoUp">
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Figure 1D</p>
+              <h3 className="panelTitle">How contagion becomes an operator event</h3>
+            </div>
+            <span className="panelMeta">
+              {exampleContagionAlert?.symbol ?? exampleSymbol} | {exampleContagionAlert?.detected_at ? formatDateTime(exampleContagionAlert.detected_at) : "Example window"}
+            </span>
+          </div>
+          <div className="contagionWindow">
+            <div className="contagionNode">
+              <span className="mathLabel">Trigger</span>
+              <strong>{exampleContagionAlert?.symbol ?? exampleSymbol}</strong>
+              <small>{exampleContagionSector ? `${exampleContagionSector} sector` : "Sector peer set required"}</small>
+            </div>
+            <div className="contagionArrow" aria-hidden="true">
+              <span>→</span>
+            </div>
+            <div className="contagionNode warning">
+              <span className="mathLabel">Peer window</span>
+              <strong>{formatNumber(exampleContagionPeers.length, 0)} confirmations</strong>
+              <small>
+                {readString(exampleContagionPayload, "observation_window_start")
+                  ? `${formatDateTime(readString(exampleContagionPayload, "observation_window_start"))} to ${formatDateTime(readString(exampleContagionPayload, "observation_window_end"))}`
+                  : `${methodology?.contagion.window_minutes ?? 5}-minute bounded window`}
+              </small>
+            </div>
+            <div className="contagionArrow" aria-hidden="true">
+              <span>→</span>
+            </div>
+            <div className="contagionNode critical">
+              <span className="mathLabel">Risk score</span>
+              <strong>{formatNumber(exampleContagionAlert?.composite_score, 3)}</strong>
+              <small>{methodology?.contagion.risk_score_formula ?? "trigger + peers + spread"}</small>
+            </div>
+          </div>
+          <div className="keyValueGrid">
+            <div className="keyValueCard">
+              <span>Peer average score</span>
+              <strong>{formatNumber(readNumber(exampleContagionPayload, "peer_average_score"), 3)}</strong>
+            </div>
+            <div className="keyValueCard">
+              <span>Affected symbols</span>
+              <strong>{exampleContagionPeers.join(", ") || "N/A"}</strong>
+            </div>
+            <div className="keyValueCard">
+              <span>Severity</span>
+              <strong>{exampleContagionAlert?.severity ?? "N/A"}</strong>
+            </div>
+            <div className="keyValueCard">
+              <span>Status</span>
+              <strong>{exampleContagionAlert?.status ?? "N/A"}</strong>
+            </div>
+          </div>
+          <div className="figureCaption">
+            Contagion does not scan the full market graph. It opens a bounded same-sector window, waits for peer confirmations, scores the propagation risk, and then
+            persists a relational event that operators and analysts can filter later.
+          </div>
+        </article>
+
+        <article className="surface">
+          <div className="panelHeader">
+            <div>
+              <p className="panelEyebrow">Figure 1E</p>
+              <h3 className="panelTitle">What ETL writes into the warehouse</h3>
+            </div>
+            <span className="panelMeta">Minute fact, day fact, coverage fact, and downstream views</span>
+          </div>
+          <div className="codeCompareGrid singleColumn">
+            <div className="codeCard">
+              <div className="codeCardHeader">
+                <strong>Warehouse lineage payload</strong>
+                <span>Analytical rows derived from the operational specimen</span>
+              </div>
+              <pre className="codeBlock">{jsonPreview(exampleWarehousePayload)}</pre>
+            </div>
+          </div>
+          <div className="figureCaption">
+            The same operational minute contributes to multiple analytical grains. Minute-level analysis stays in <span className="dataMono">fact_anomaly_minute</span>,
+            session-level context lands in <span className="dataMono">fact_market_day</span>, and coverage completeness is tracked separately in{" "}
+            <span className="dataMono">fact_surveillance_coverage</span>.
+          </div>
+        </article>
       </section>
 
       <section className="contentGrid twoUp">
@@ -933,6 +1366,36 @@ export default async function ProcessPage() {
             </table>
           </div>
         </article>
+      </section>
+
+      <section className="surface">
+        <div className="panelHeader">
+          <div>
+            <p className="panelEyebrow">Figure 5</p>
+            <h3 className="panelTitle">How an analyst turns warehouse data into reports</h3>
+          </div>
+          <span className="panelMeta">Question {"->"} fact/view {"->"} result set {"->"} report</span>
+        </div>
+        <div className="queryBlueprintGrid">
+          {analystQuestions.map((item) => (
+            <article key={item.question} className="queryBlueprintCard">
+              <div className="queryBlueprintHeader">
+                <span className="queryBlueprintLabel">Analyst question</span>
+                <span className="queryBlueprintSource">{item.source}</span>
+              </div>
+              <h4 className="queryBlueprintTitle">{item.question}</h4>
+              <p className="queryBlueprintText">{item.outcome}</p>
+              <div className="queryBlueprintFoot">
+                <span>Analytical grain</span>
+                <strong>{item.grain}</strong>
+              </div>
+            </article>
+          ))}
+        </div>
+        <div className="statusNote">
+          The warehouse is not just a historical archive. It is the analyst layer: facts stay separated by grain, materialized views precompute the expensive summaries,
+          the Analyst Studio exposes a safe visual query builder, and the same result sets can be exported to CSV or printed to PDF for review packs and viva reports.
+        </div>
       </section>
 
       <ExplainerCards

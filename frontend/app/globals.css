@@ -1608,6 +1608,274 @@ td {
   font-size: 0.78rem;
 }
 
+.stageDiagram {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-top: 1rem;
+  align-items: stretch;
+}
+
+.stageDiagramItem {
+  display: contents;
+}
+
+.stageNode {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid rgba(155, 177, 201, 0.08);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(15, 23, 34, 0.84), rgba(8, 13, 20, 0.74));
+}
+
+.stageNodeTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.stageNodeMeta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: right;
+}
+
+.stageNodeDetail {
+  margin: 0;
+  color: var(--muted-strong);
+  line-height: 1.55;
+  font-size: 0.9rem;
+}
+
+.stageFactList {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding-left: 1rem;
+  color: var(--muted-strong);
+}
+
+.stageFactList li {
+  line-height: 1.45;
+}
+
+.stageConnector {
+  display: grid;
+  place-items: center;
+  min-width: 40px;
+  color: var(--accent-strong);
+  font-size: 1.25rem;
+}
+
+.stageConnector span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  border: 1px solid rgba(94, 192, 211, 0.18);
+  background: rgba(94, 192, 211, 0.06);
+}
+
+.codeCompareGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.codeCompareGrid.singleColumn {
+  grid-template-columns: 1fr;
+}
+
+.codeCard {
+  min-width: 0;
+  border: 1px solid rgba(155, 177, 201, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.025);
+  overflow: hidden;
+}
+
+.codeCard.compact {
+  margin-top: 0.95rem;
+}
+
+.codeCardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid rgba(155, 177, 201, 0.08);
+}
+
+.codeCardHeader strong {
+  font-size: 0.98rem;
+}
+
+.codeCardHeader span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.codeBlock {
+  margin: 0;
+  padding: 0.95rem 1rem 1rem;
+  max-height: 420px;
+  overflow: auto;
+  background: rgba(3, 6, 10, 0.5);
+  color: #d8e6f2;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.figureCaption {
+  margin-top: 0.85rem;
+  color: var(--muted);
+  line-height: 1.55;
+  font-size: 0.88rem;
+}
+
+.mathCardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.8rem;
+}
+
+.mathCard,
+.contagionNode,
+.queryBlueprintCard {
+  min-width: 0;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(155, 177, 201, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mathCard.accent,
+.contagionNode.accent,
+.queryBlueprintCard.accent {
+  border-color: rgba(72, 201, 176, 0.24);
+  background: linear-gradient(180deg, rgba(72, 201, 176, 0.08), rgba(72, 201, 176, 0.03));
+}
+
+.mathCard.warning,
+.contagionNode.warning,
+.queryBlueprintCard.warning {
+  border-color: rgba(255, 181, 94, 0.24);
+  background: linear-gradient(180deg, rgba(255, 181, 94, 0.08), rgba(255, 181, 94, 0.03));
+}
+
+.mathCard.critical,
+.contagionNode.critical,
+.queryBlueprintCard.critical {
+  border-color: rgba(255, 107, 122, 0.24);
+  background: linear-gradient(180deg, rgba(255, 107, 122, 0.08), rgba(255, 107, 122, 0.03));
+}
+
+.mathCard.success,
+.contagionNode.success,
+.queryBlueprintCard.success {
+  border-color: rgba(120, 215, 175, 0.24);
+  background: linear-gradient(180deg, rgba(120, 215, 175, 0.08), rgba(120, 215, 175, 0.03));
+}
+
+.mathLabel,
+.queryBlueprintLabel {
+  display: block;
+  color: var(--muted);
+  font-size: 0.74rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.mathCard strong,
+.contagionNode strong {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 1.12rem;
+  letter-spacing: -0.03em;
+}
+
+.mathCard small,
+.contagionNode small {
+  display: block;
+  margin-top: 0.28rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.contagionWindow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+.contagionArrow {
+  display: grid;
+  place-items: center;
+  color: var(--accent-strong);
+  font-size: 1.2rem;
+}
+
+.queryBlueprintGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.85rem;
+}
+
+.queryBlueprintHeader,
+.queryBlueprintFoot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.queryBlueprintSource {
+  color: var(--accent-strong);
+  font-size: 0.8rem;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.queryBlueprintTitle {
+  margin: 0.6rem 0 0;
+  font-size: 1.02rem;
+  line-height: 1.3;
+}
+
+.queryBlueprintText {
+  margin: 0.45rem 0 0;
+  color: var(--muted-strong);
+  line-height: 1.55;
+  font-size: 0.9rem;
+}
+
+.queryBlueprintFoot {
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(155, 177, 201, 0.08);
+}
+
+.queryBlueprintFoot span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.queryBlueprintFoot strong {
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+
 .processSteps {
   display: grid;
   gap: 0.9rem;
@@ -1840,6 +2108,9 @@ td {
   .processStepTitleRow,
   .networkHeader,
   .networkFooter,
+  .stageNodeTop,
+  .queryBlueprintHeader,
+  .queryBlueprintFoot,
   .signalLegend,
   .signalAxisLabels,
   .intensityHeader {
@@ -1871,8 +2142,29 @@ td {
   .datasetGrid,
   .cardGrid.compact,
   .keyValueGrid,
+  .codeCompareGrid,
+  .mathCardGrid,
   .chartSummaryRow,
   .processStepCard {
+    grid-template-columns: 1fr;
+  }
+
+  .stageDiagram {
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .stageDiagramItem {
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .stageConnector,
+  .contagionArrow {
+    display: none;
+  }
+
+  .contagionWindow {
     grid-template-columns: 1fr;
   }
 }
