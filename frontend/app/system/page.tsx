@@ -97,44 +97,51 @@ export default async function SystemPage() {
           </div>
         </div>
         <div className="statsGrid">
-          <StatCard label="Last tick" value={formatDateTime(health?.last_tick)} />
+          <StatCard label="Last tick" value={formatDateTime(health?.last_tick)} info="The latest market timestamp observed by the operational pipeline." />
           <StatCard
             label="Materialized rows"
             value={formatCompactIndian(scale?.actual.materialized_total_rows, 2)}
+            info="The total rows currently materialized across PostgreSQL, Cassandra-derived counts, and Redis-backed live state."
             hint={scale ? `${scale.actual.materialized_total_rows.toLocaleString("en-IN")} across stores` : "Inventory snapshot"}
           />
           <StatCard
             label="Loaded-window scale"
             value={formatCompactIndian(scale?.projection.tick_and_anomaly_rows_for_loaded_window, 2)}
+            info="Projected tick-plus-anomaly row count for the currently loaded historical window at full-NSE minute grain."
             hint={scale ? `${scale.coverage.trading_days_loaded} trading days at full-NSE minute resolution` : "Projection unavailable"}
             tone="warning"
           />
           <StatCard
             label="Annual scale"
             value={formatCompactIndian(scale?.projection.tick_and_anomaly_rows_per_year, 2)}
+            info="Projected yearly tick-plus-anomaly row volume if the full NSE universe is monitored at minute resolution."
             hint="Tick plus anomaly rows per trading year"
             tone="critical"
           />
           <StatCard
             label="Hydrated"
             value={String(hydratedCount)}
+            info="Listed symbols whose historical bars and metadata are already loaded and ready for analytics."
             hint={`${health?.database_inventory?.daily_bars ?? 0} daily bars | ${coveragePct} coverage`}
           />
           <StatCard
             label="Sector coverage"
             value={`${sectorCoveragePct}%`}
+            info="Share of the listed universe whose sector has been confidently classified for peer analysis."
             hint={`${knownSectorCount} classified | ${unknownSectorCount} unresolved`}
             tone="accent"
           />
           <StatCard
             label="In-flight load"
             value={formatCompactIndian(inflightTicks + inflightAnomalies, 2)}
+            info="Rows currently being written by active bulk ingestion or anomaly-processing jobs."
             hint={inflightTicks + inflightAnomalies ? `${formatCompactIndian(inflightTicks, 2)} ticks | ${formatCompactIndian(inflightAnomalies, 2)} anomalies` : "No active bulk load"}
             tone={inflightTicks + inflightAnomalies ? "warning" : "default"}
           />
           <StatCard
             label="Webhook"
             value={health?.notifications?.webhook_enabled ? "Configured" : "Off"}
+            info="Optional outbound alert delivery channel for forwarding high-severity events to another system."
             hint={
               health?.notifications?.webhook_enabled
                 ? `${health.notifications.webhook_type} | ${health.notifications.min_severity}+`

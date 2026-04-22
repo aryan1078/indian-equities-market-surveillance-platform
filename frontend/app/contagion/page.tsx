@@ -65,10 +65,10 @@ export default async function ContagionPage() {
           </div>
         </div>
         <div className="statsGrid">
-          <StatCard label="Events" value={String(events.length)} tone="critical" />
-          <StatCard label="Average risk" value={formatNumber(averageRisk, 3)} />
-          <StatCard label="Largest spread" value={String(largestSpread)} hint="Affected peers" />
-          <StatCard label="Window" value="5 min" hint="Sector peer horizon" tone="accent" />
+          <StatCard label="Events" value={String(events.length)} info="Persisted contagion windows that were confirmed by sector peers." tone="critical" />
+          <StatCard label="Average risk" value={formatNumber(averageRisk, 3)} info="Average contagion risk score across the currently listed operational events." />
+          <StatCard label="Largest spread" value={String(largestSpread)} info="The highest affected-peer count seen in a single contagion event." hint="Affected peers" />
+          <StatCard label="Window" value="5 min" info="The confirmation horizon in which same-sector peers must also turn anomalous." hint="Sector peer horizon" tone="accent" />
         </div>
       </section>
 

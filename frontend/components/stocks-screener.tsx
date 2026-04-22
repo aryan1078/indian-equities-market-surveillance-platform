@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useDeferredValue, useMemo, useState } from "react";
 
+import { InfoHint } from "./info-hint";
 import type { ScreenerItem } from "../lib/api";
 import { formatNumber, formatPercent, severityLabel } from "../lib/format";
 
@@ -178,10 +179,16 @@ export function StocksScreener({ items }: StocksScreenerProps) {
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Filter symbol, company, or sector"
             aria-label="Filter stocks"
+            title="Search across hydrated stock workspaces by symbol, company, exchange, or sector."
           />
         </div>
         <div className="toolbarGroup">
-          <select className="toolbarSelect" value={sector} onChange={(event) => setSector(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={sector}
+            onChange={(event) => setSector(event.target.value)}
+            title="Restrict the screener to a single sector."
+          >
             <option value="all">All sectors</option>
             {sectors.map((item) => (
               <option key={item} value={item}>
@@ -189,68 +196,109 @@ export function StocksScreener({ items }: StocksScreenerProps) {
               </option>
             ))}
           </select>
-          <select className="toolbarSelect" value={status} onChange={(event) => setStatus(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+            title="Filter by live surveillance state: open alerts, anomalous names, active names, or quiet names."
+          >
             <option value="all">All states</option>
             <option value="open">Open alerts</option>
             <option value="anomalous">Live anomalies</option>
             <option value="active">Any live signal</option>
             <option value="quiet">Quiet names</option>
           </select>
-          <select className="toolbarSelect" value={sort} onChange={(event) => setSort(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={sort}
+            onChange={(event) => setSort(event.target.value)}
+            title="Choose whether the table is ordered by surveillance priority, return, RSI, volume ratio, or symbol."
+          >
             <option value="priority">Priority</option>
             <option value="return">20D return</option>
             <option value="rsi">RSI 14</option>
             <option value="volume">Volume ratio</option>
             <option value="name">Alphabetical</option>
           </select>
-          <select className="toolbarSelect" value={limit} onChange={(event) => setLimit(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={limit}
+            onChange={(event) => setLimit(event.target.value)}
+            title="Choose how many screener rows to show at once."
+          >
             <option value="25">Top 25</option>
             <option value="50">Top 50</option>
             <option value="100">Top 100</option>
             <option value="all">All rows</option>
           </select>
-          <button type="button" className="actionButton" onClick={resetFilters} disabled={!hasFilters}>
+          <button
+            type="button"
+            className="actionButton"
+            onClick={resetFilters}
+            disabled={!hasFilters}
+            title="Reset screener search, state filters, sorting, and row count."
+          >
             Reset
           </button>
         </div>
       </div>
 
       <div className="filterPills">
-        <button
-          type="button"
-          className={`filterPill ${status === "all" && sort === "priority" && !query.trim() && sector === "all" ? "active" : ""}`}
-          onClick={() => applyPreset("priority")}
-        >
-          Priority view
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${status === "open" ? "active" : ""}`}
-          onClick={() => applyPreset("open")}
-        >
-          Open alerts
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${status === "anomalous" ? "active" : ""}`}
-          onClick={() => applyPreset("anomalous")}
-        >
-          Live anomalies
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${status === "quiet" ? "active" : ""}`}
-          onClick={() => applyPreset("quiet")}
-        >
-          Quiet names
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${status === "all" && sort === "return" ? "active" : ""}`}
-          onClick={() => applyPreset("return")}
-        >
-          Top 20D return
-        </button>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${status === "all" && sort === "priority" && !query.trim() && sector === "all" ? "active" : ""}`}
+            onClick={() => applyPreset("priority")}
+            title="Default screening order: severity, anomaly state, score, and return."
+          >
+            Priority view
+          </button>
+          <InfoHint content="The default ordering: open-alert severity first, then live anomaly state, then composite score and recent return." label="Priority view definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${status === "open" ? "active" : ""}`}
+            onClick={() => applyPreset("open")}
+            title="Only symbols with unresolved operator alerts."
+          >
+            Open alerts
+          </button>
+          <InfoHint content="Names with a persisted operator alert that is still unresolved in the current filter context." label="Open alerts definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${status === "anomalous" ? "active" : ""}`}
+            onClick={() => applyPreset("anomalous")}
+            title="Only symbols whose latest intraday signal is anomalous."
+          >
+            Live anomalies
+          </button>
+          <InfoHint content="Names whose latest intraday signal is currently crossing at least one anomaly threshold." label="Live anomalies definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${status === "quiet" ? "active" : ""}`}
+            onClick={() => applyPreset("quiet")}
+            title="Only symbols with no current alert and no live anomaly."
+          >
+            Quiet names
+          </button>
+          <InfoHint content="Hydrated symbols with no current open alert and no latest-minute anomaly flag." label="Quiet names definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${status === "all" && sort === "return" ? "active" : ""}`}
+            onClick={() => applyPreset("return")}
+            title="Rank hydrated symbols by 20-session percentage return."
+          >
+            Top 20D return
+          </button>
+          <InfoHint content="Ranks names by their percentage move over the last 20 loaded trading sessions." label="Top 20D return definition" align="end" />
+        </div>
       </div>
 
       <div className="resultMeta">
@@ -274,9 +322,9 @@ export function StocksScreener({ items }: StocksScreenerProps) {
                 <th>Last close</th>
                 <th>1D</th>
                 <th>20D</th>
-                <th>RSI</th>
-                <th>Vol ratio</th>
-                <th>Signal</th>
+                <th title="Relative Strength Index over 14 sessions. Higher values indicate stronger recent upside momentum.">RSI</th>
+                <th title="Current volume relative to the recent baseline. Values above 1 mean participation is running hotter than usual.">Vol ratio</th>
+                <th title="The strongest current surveillance state for the symbol: alert severity if present, otherwise live anomaly or normal.">Signal</th>
               </tr>
             </thead>
             <tbody>

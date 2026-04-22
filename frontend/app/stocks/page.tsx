@@ -42,28 +42,32 @@ export default async function StocksPage() {
           </div>
         </div>
         <div className="statsGrid">
-          <StatCard label="Open alerts" value={String(alerted.length)} tone="warning" />
-          <StatCard label="Live anomalies" value={String(anomalous.length)} tone="critical" />
-          <StatCard label="Pending hydration" value={String(pendingCount)} hint="Loads on demand or by batch job" />
+          <StatCard label="Open alerts" value={String(alerted.length)} info="Hydrated names with unresolved operator alerts in the screener." tone="warning" />
+          <StatCard label="Live anomalies" value={String(anomalous.length)} info="Hydrated names whose latest intraday measurement is currently crossing anomaly thresholds." tone="critical" />
+          <StatCard label="Pending hydration" value={String(pendingCount)} info="Listed symbols that still need their history to be loaded before analytics and warehouse jobs can use them." hint="Loads on demand or by batch job" />
           <StatCard
             label="Classified sectors"
             value={String(knownSectorCount)}
+            info="Symbols whose sector mapping has been resolved well enough for peer analysis and contagion grouping."
             hint={`${unknownSectorCount} still unresolved`}
             tone="accent"
           />
           <StatCard
             label="Watchlist"
             value={String(reference?.watchlist_count ?? listed.filter((item) => item.watchlist).length)}
+            info="The curated subset prioritized for demos, replay stories, and the operator-facing live experience."
             hint="Default live and replay universe"
           />
           <StatCard
             label="Streaming rows"
             value={formatCompactIndian(streamingRows, 2)}
+            info="Rows currently materialized in the streaming layer across Cassandra latest-state and operational minute data."
             hint={scale ? `${scale.actual.materialized_total_rows.toLocaleString("en-IN")} total materialized rows` : "Scale snapshot unavailable"}
           />
           <StatCard
             label="Top 20D move"
             value={topPerformer?.symbol ?? "N/A"}
+            info="The hydrated stock with the strongest percentage move over the last 20 loaded trading sessions."
             hint={topPerformer ? formatPercent(topPerformer.indicators.return_20d_pct) : "No ranking"}
             tone="accent"
           />

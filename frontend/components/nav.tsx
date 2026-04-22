@@ -38,10 +38,18 @@ export function TopNav() {
       </nav>
 
       <div className="sidebarMeta">
-        <span className="metaChip">Kafka</span>
-        <span className="metaChip">Cassandra</span>
-        <span className="metaChip">Redis</span>
-        <span className="metaChip">PostgreSQL</span>
+        <span className="metaChip" title="Kafka is the event bus carrying ticks, anomalies, replay messages, and decoupled consumers.">
+          Kafka
+        </span>
+        <span className="metaChip" title="Cassandra stores append-heavy intraday tick and anomaly operational data.">
+          Cassandra
+        </span>
+        <span className="metaChip" title="Redis holds hot state for recovery, live snapshots, and fast dashboard reads.">
+          Redis
+        </span>
+        <span className="metaChip" title="PostgreSQL serves both the operational relational layer and the analytical warehouse.">
+          PostgreSQL
+        </span>
       </div>
     </aside>
   );

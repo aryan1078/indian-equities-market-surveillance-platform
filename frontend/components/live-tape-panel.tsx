@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useDeferredValue, useMemo, useState } from "react";
 
+import { InfoHint } from "./info-hint";
 import type { LatestMarket, StockReference } from "../lib/api";
 import { formatCompactIndian, formatDate, formatDateTime, formatNumber, formatTime } from "../lib/format";
 
@@ -203,10 +204,16 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Filter symbol, company, sector, or exchange"
             aria-label="Filter latest tape"
+            title="Search the latest market snapshot by symbol, company, sector, or exchange."
           />
         </div>
         <div className="toolbarGroup">
-          <select className="toolbarSelect" value={sector} onChange={(event) => setSector(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={sector}
+            onChange={(event) => setSector(event.target.value)}
+            title="Restrict the snapshot to one sector."
+          >
             <option value="all">All sectors</option>
             {sectors.map((item) => (
               <option key={item} value={item}>
@@ -214,58 +221,95 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
               </option>
             ))}
           </select>
-          <select className="toolbarSelect" value={status} onChange={(event) => setStatus(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+            title="Filter the tape by live signal state."
+          >
             <option value="all">All states</option>
             <option value="flagged">Flagged only</option>
             <option value="normal">Normal only</option>
           </select>
-          <select className="toolbarSelect" value={sort} onChange={(event) => setSort(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={sort}
+            onChange={(event) => setSort(event.target.value)}
+            title="Sort the latest snapshot by surveillance priority, score, volume, or symbol."
+          >
             <option value="priority">Priority</option>
             <option value="score">Composite score</option>
             <option value="volume">Volume</option>
             <option value="symbol">Alphabetical</option>
           </select>
-          <select className="toolbarSelect" value={limit} onChange={(event) => setLimit(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={limit}
+            onChange={(event) => setLimit(event.target.value)}
+            title="Choose how many snapshot rows to render."
+          >
             <option value="25">Top 25</option>
             <option value="50">Top 50</option>
             <option value="100">Top 100</option>
             <option value="all">All rows</option>
           </select>
-          <button type="button" className="actionButton" onClick={resetFilters} disabled={!hasFilters}>
+          <button
+            type="button"
+            className="actionButton"
+            onClick={resetFilters}
+            disabled={!hasFilters}
+            title="Reset the live-tape search, state filters, sorting, and row count."
+          >
             Reset
           </button>
         </div>
       </div>
 
       <div className="filterPills">
-        <button
-          type="button"
-          className={`filterPill ${!hasFilters ? "active" : ""}`}
-          onClick={() => applyPreset("all")}
-        >
-          Live default
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${status === "flagged" ? "active" : ""}`}
-          onClick={() => applyPreset("flagged")}
-        >
-          Flagged only
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${status === "all" && sort === "score" ? "active" : ""}`}
-          onClick={() => applyPreset("score")}
-        >
-          Highest score
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${status === "all" && sort === "volume" ? "active" : ""}`}
-          onClick={() => applyPreset("volume")}
-        >
-          Highest volume
-        </button>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${!hasFilters ? "active" : ""}`}
+            onClick={() => applyPreset("all")}
+            title="Default market snapshot view with priority ordering and no extra filters."
+          >
+            Live default
+          </button>
+          <InfoHint content="The default market snapshot ordering: flagged symbols first, then higher composite scores, with no extra filters applied." label="Live default definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${status === "flagged" ? "active" : ""}`}
+            onClick={() => applyPreset("flagged")}
+            title="Only symbols whose latest minute is flagged by the anomaly engine."
+          >
+            Flagged only
+          </button>
+          <InfoHint content="Shows only symbols whose latest minute is currently crossing anomaly thresholds." label="Flagged only definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${status === "all" && sort === "score" ? "active" : ""}`}
+            onClick={() => applyPreset("score")}
+            title="Sort the latest snapshot by composite anomaly score."
+          >
+            Highest score
+          </button>
+          <InfoHint content="Ranks the snapshot by composite anomaly score, which blends price surprise and volume surprise." label="Highest score definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${status === "all" && sort === "volume" ? "active" : ""}`}
+            onClick={() => applyPreset("volume")}
+            title="Sort the latest snapshot by raw traded volume."
+          >
+            Highest volume
+          </button>
+          <InfoHint content="Ranks the latest snapshot by raw traded volume so you can inspect the heaviest names first." label="Highest volume definition" align="end" />
+        </div>
       </div>
 
       <div className="resultMeta">
@@ -296,10 +340,12 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
                 <th>Company</th>
                 <th>Sector</th>
                 <th>Last</th>
-                <th>Score</th>
-                <th>Status</th>
+                <th title="Composite anomaly score for the latest minute. Higher values mean the bar is more unusual relative to recent behavior.">Score</th>
+                <th title="Flagged means the latest minute crossed an anomaly rule. Normal means it stayed below all configured thresholds.">Status</th>
                 <th>Volume</th>
-                <th>{snapshotIsUniform ? "Freshness" : "Bar time"}</th>
+                <th title={snapshotIsUniform ? "When the whole tape is aligned to one minute, this column confirms whether a symbol is on the latest shared snapshot." : "Shows the timestamp of the latest bar contributing to that symbol's current snapshot row."}>
+                  {snapshotIsUniform ? "Freshness" : "Bar time"}
+                </th>
               </tr>
             </thead>
             <tbody>

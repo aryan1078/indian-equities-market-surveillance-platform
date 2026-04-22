@@ -96,17 +96,19 @@ export default async function StockDetailPage({ params }: PageProps) {
           </div>
         </div>
         <div className="statsGrid">
-          <StatCard label="Last close" value={formatNumber(workspace.indicators.last_close)} />
+          <StatCard label="Last close" value={formatNumber(workspace.indicators.last_close)} info="The most recent loaded close price for this stock." />
           <StatCard
             label="1D move"
             value={formatPercent(workspace.indicators.day_change_pct)}
+            info="Percentage move from the prior loaded daily close to the latest daily close."
             tone={(workspace.indicators.day_change_pct ?? 0) >= 0 ? "accent" : "warning"}
           />
-          <StatCard label="20D move" value={formatPercent(workspace.indicators.return_20d_pct)} />
-          <StatCard label="45D move" value={formatPercent(historySummary.return_45d_pct)} />
+          <StatCard label="20D move" value={formatPercent(workspace.indicators.return_20d_pct)} info="Percentage return over the last 20 loaded trading sessions." />
+          <StatCard label="45D move" value={formatPercent(historySummary.return_45d_pct)} info="Percentage return across the loaded 45-session window used for the stock workspace." />
           <StatCard
             label="Live anomaly"
             value={latestAnomaly ? formatNumber(latestAnomaly.composite_score, 3) : "Normal"}
+            info="The latest intraday composite anomaly score for this symbol. Normal means no current active anomaly row is present."
             hint={latestAnomaly ? formatTime(latestAnomaly.timestamp_ist) : "No active flag"}
             tone={latestAnomaly ? "critical" : "default"}
           />
@@ -117,17 +119,20 @@ export default async function StockDetailPage({ params }: PageProps) {
                 ? "N/A"
                 : `${formatNumber(historySummary.range_position_pct, 1)}%`
             }
+            info="Where the latest close sits between the period low and period high for the loaded historical range."
             hint={`${formatNumber(historySummary.period_low)} to ${formatNumber(historySummary.period_high)}`}
           />
           <StatCard
             label="Open alerts"
             value={String(alertSummary.open_count)}
+            info="Persisted operator alerts for this symbol that have not yet been acknowledged."
             hint={`${alertSummary.acknowledged_count} acknowledged`}
             tone={alertSummary.open_count ? "warning" : "default"}
           />
           <StatCard
             label="Flagged points"
             value={String(anomalySummary.flagged_count)}
+            info="Count of intraday anomaly points in the loaded latest session that crossed surveillance thresholds."
             hint={
               anomalySummary.latest_flagged_at ? formatTime(anomalySummary.latest_flagged_at) : "No recent flag"
             }
@@ -222,12 +227,12 @@ export default async function StockDetailPage({ params }: PageProps) {
             <>
               <LineChart values={historyValues} labels={historyLabels} seriesLabel="daily close" />
               <div className="statsGrid compactStats">
-                <StatCard label="RSI 14" value={formatNumber(workspace.indicators.rsi_14, 1)} />
-                <StatCard label="ATR 14" value={formatNumber(workspace.indicators.atr_14, 2)} />
-                <StatCard label="20D vol" value={formatPercent(workspace.indicators.volatility_20d_pct)} />
-                <StatCard label="Vol ratio" value={formatNumber(workspace.indicators.volume_ratio_20d, 2)} />
-                <StatCard label="5D move" value={formatPercent(historySummary.return_5d_pct)} />
-                <StatCard label="20D avg vol" value={formatNumber(historySummary.avg_volume_20d, 0)} />
+                <StatCard label="RSI 14" value={formatNumber(workspace.indicators.rsi_14, 1)} info="Relative Strength Index over 14 sessions, a momentum indicator bounded between 0 and 100." />
+                <StatCard label="ATR 14" value={formatNumber(workspace.indicators.atr_14, 2)} info="Average True Range over 14 sessions, used as a recent volatility gauge in price units." />
+                <StatCard label="20D vol" value={formatPercent(workspace.indicators.volatility_20d_pct)} info="Recent 20-session realized volatility expressed as a percentage." />
+                <StatCard label="Vol ratio" value={formatNumber(workspace.indicators.volume_ratio_20d, 2)} info="Latest volume relative to the recent 20-session average volume baseline." />
+                <StatCard label="5D move" value={formatPercent(historySummary.return_5d_pct)} info="Percentage move over the most recent 5 loaded trading sessions." />
+                <StatCard label="20D avg vol" value={formatNumber(historySummary.avg_volume_20d, 0)} info="Average daily traded volume across the recent 20-session historical window." />
               </div>
             </>
           ) : (

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
+import { InfoHint } from "./info-hint";
 import { apiUrl, type ReferenceStocksResponse, type SectorOption, type StockReference } from "../lib/api";
 import { formatDate } from "../lib/format";
 
@@ -154,10 +155,16 @@ export function UniverseDirectory({
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search the NSE universe"
             aria-label="Search NSE universe"
+            title="Search across all listed NSE symbols, company names, sectors, and aliases."
           />
         </div>
         <div className="toolbarGroup">
-          <select className="toolbarSelect" value={filter} onChange={(event) => setFilter(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            title="Filter the listed universe by watchlist status or whether daily history has already been loaded."
+          >
             <option value="all">All listed</option>
             <option value="watchlist">Watchlist</option>
             <option value="hydrated">Hydrated</option>
@@ -165,7 +172,12 @@ export function UniverseDirectory({
           </select>
         </div>
         <div className="toolbarGroup">
-          <select className="toolbarSelect" value={sectorState} onChange={(event) => setSectorState(event.target.value)}>
+          <select
+            className="toolbarSelect"
+            value={sectorState}
+            onChange={(event) => setSectorState(event.target.value)}
+            title="Filter by whether a symbol already has a resolved sector classification."
+          >
             <option value="all">All sectors</option>
             <option value="known">Classified only</option>
             <option value="unknown">Unknown only</option>
@@ -177,6 +189,7 @@ export function UniverseDirectory({
             value={sector}
             onChange={(event) => setSector(event.target.value)}
             disabled={sectorState === "unknown" || !classifiedOptions.length}
+            title="Restrict the directory to one resolved sector bucket."
           >
             <option value="">All classified sectors</option>
             {classifiedOptions.map((option) => (
@@ -185,51 +198,77 @@ export function UniverseDirectory({
               </option>
             ))}
           </select>
-          <button type="button" className="actionButton" onClick={resetFilters} disabled={!hasFilters}>
+          <button
+            type="button"
+            className="actionButton"
+            onClick={resetFilters}
+            disabled={!hasFilters}
+            title="Reset search, listing-state, and sector filters."
+          >
             Reset
           </button>
         </div>
       </div>
 
       <div className="filterPills">
-        <button
-          type="button"
-          className={`filterPill ${filter === "all" && sectorState === "all" && !query.trim() && !sector ? "active" : ""}`}
-          onClick={resetFilters}
-        >
-          All listed
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${filter === "watchlist" ? "active" : ""}`}
-          onClick={() => setFilter("watchlist")}
-        >
-          Watchlist
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${filter === "hydrated" ? "active" : ""}`}
-          onClick={() => setFilter("hydrated")}
-        >
-          Hydrated
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${filter === "unhydrated" ? "active" : ""}`}
-          onClick={() => setFilter("unhydrated")}
-        >
-          Needs hydration
-        </button>
-        <button
-          type="button"
-          className={`filterPill ${sectorState === "unknown" ? "active" : ""}`}
-          onClick={() => {
-            setSector("");
-            setSectorState("unknown");
-          }}
-        >
-          Unknown sectors
-        </button>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${filter === "all" && sectorState === "all" && !query.trim() && !sector ? "active" : ""}`}
+            onClick={resetFilters}
+            title="Every symbol currently present in the NSE reference directory."
+          >
+            All listed
+          </button>
+          <InfoHint content="Every symbol currently present in the NSE reference directory, whether or not history has been loaded yet." label="All listed definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${filter === "watchlist" ? "active" : ""}`}
+            onClick={() => setFilter("watchlist")}
+            title="The curated subset prioritized for live demos and replay."
+          >
+            Watchlist
+          </button>
+          <InfoHint content="The curated subset used first for live demos, replay stories, and presentation-friendly monitoring." label="Watchlist definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${filter === "hydrated" ? "active" : ""}`}
+            onClick={() => setFilter("hydrated")}
+            title="Symbols whose historical bars and metadata are already loaded."
+          >
+            Hydrated
+          </button>
+          <InfoHint content="Symbols whose historical daily bars and metadata are already loaded, so indicators, drill-down pages, and ETL can query them immediately." label="Hydrated definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${filter === "unhydrated" ? "active" : ""}`}
+            onClick={() => setFilter("unhydrated")}
+            title="Listed symbols that still need a history load before analytics can use them."
+          >
+            Needs hydration
+          </button>
+          <InfoHint content="Listed names that exist in the directory but still need a history load before stock analytics and warehouse jobs can use them." label="Needs hydration definition" />
+        </div>
+        <div className="filterPillCluster">
+          <button
+            type="button"
+            className={`filterPill ${sectorState === "unknown" ? "active" : ""}`}
+            onClick={() => {
+              setSector("");
+              setSectorState("unknown");
+            }}
+            title="Symbols whose sector mapping is still unresolved."
+          >
+            Unknown sectors
+          </button>
+          <InfoHint content="Symbols whose sector mapping has not been confidently resolved yet, so peer analysis and contagion grouping stay conservative." label="Unknown sectors definition" align="end" />
+        </div>
       </div>
 
       <div className="resultMeta">
@@ -255,9 +294,9 @@ export function UniverseDirectory({
                 <th>Company</th>
                 <th>Sector</th>
                 <th>Series</th>
-                <th>History</th>
-                <th>Last session</th>
-                <th>Mode</th>
+                <th title="How many daily bars are already loaded for this symbol. Pending means the symbol has not been hydrated yet.">History</th>
+                <th title="The latest trading date currently available in the loaded daily history for that symbol.">Last session</th>
+                <th title="Watchlist means the symbol is in the curated live/demo subset. Directory means it is present in the broader reference universe only.">Mode</th>
               </tr>
             </thead>
             <tbody>

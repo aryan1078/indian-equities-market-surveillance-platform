@@ -79,39 +79,46 @@ export default async function WarehousePage() {
           <StatCard
             label="Minute facts"
             value={formatCompactIndian(summary?.anomaly_minute_rows, 2)}
+            info="Minute-grain warehouse rows storing surveillance metrics for historical analysis."
             hint={summary ? `${summary.anomaly_minute_rows.toLocaleString("en-IN")} warehouse anomaly rows` : "No warehouse load yet"}
           />
           <StatCard
             label="Market-day facts"
             value={String(summary?.market_day_rows ?? 0)}
+            info="Daily stock-level warehouse rows used for rollups, persistence metrics, and cross-session queries."
             hint={`${summary?.stocks_covered ?? 0} stocks | ${summary?.sectors_covered ?? 0} sectors`}
             tone="accent"
           />
           <StatCard
             label="Coverage facts"
             value={formatCompactIndian(summary?.coverage_rows, 2)}
+            info="Factless warehouse rows recording whether surveillance coverage existed for a stock on a session."
             hint="Factless surveillance coverage grain"
           />
           <StatCard
             label="Contagion facts"
             value={String(summary?.contagion_event_rows ?? 0)}
+            info="Warehouse rows representing persisted contagion windows and their analytical linkages."
             hint={`${summary?.total_contagion_events ?? 0} linked market-day contagion flags`}
             tone="warning"
           />
           <StatCard
             label="Peak sector"
             value={hottestSector?.sector_name ?? "N/A"}
+            info="The sector with the highest peak daily composite score in the current warehouse view."
             hint={hottestSector ? formatNumber(hottestSector.max_composite_score, 3) : "No aggregate"}
             tone="critical"
           />
           <StatCard
             label="Momentum sectors"
             value={String(summary?.sector_momentum_rows ?? momentumRows.length)}
+            info="Sector regime rows comparing recent sessions against a prior window to show acceleration or cooling."
             hint={momentumLeader ? `${momentumLeader.sector_name} leads with ${momentumLeader.anomaly_delta} anomaly delta` : "Recent-vs-prior regime scan"}
           />
           <StatCard
             label="Persistent names"
             value={String(summary?.stock_persistence_rows ?? persistenceRows.length)}
+            info="Stocks whose anomaly activity is evaluated across many sessions to distinguish one-offs from repeat stress."
             hint={
               persistenceLeader
                 ? `${persistenceLeader.symbol} active on ${formatNumber(persistenceLeader.anomaly_day_ratio * 100, 1)}% of sessions`
@@ -122,6 +129,7 @@ export default async function WarehousePage() {
           <StatCard
             label="Total anomalies"
             value={formatCompactIndian(summary?.total_anomalies, 2)}
+            info="The total count of anomalous minute points loaded into the warehouse over the current date range."
             hint={
               summary
                 ? `${summary.first_calendar_date ? formatDate(summary.first_calendar_date) : "N/A"} to ${summary.last_calendar_date ? formatDate(summary.last_calendar_date) : "N/A"}`

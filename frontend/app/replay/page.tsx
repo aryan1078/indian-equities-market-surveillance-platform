@@ -20,10 +20,10 @@ export default async function ReplayPage() {
           </div>
         </div>
         <div className="statsGrid">
-          <StatCard label="Run" value={shortId(replay?.run_id)} hint={replay?.run_id ?? "No replay run"} />
-          <StatCard label="Fixture" value={fixtureLabel(fixture)} hint={fixture ?? "No fixture"} />
-          <StatCard label="Symbols" value={String(replay?.symbol_count ?? 0)} />
-          <StatCard label="Rows published" value={String(replay?.records_published ?? 0)} tone="accent" />
+          <StatCard label="Run" value={shortId(replay?.run_id)} info="The unique replay execution identifier for the latest deterministic demo run." hint={replay?.run_id ?? "No replay run"} />
+          <StatCard label="Fixture" value={fixtureLabel(fixture)} info="The stored market sample that is being re-emitted through the pipeline during replay mode." hint={fixture ?? "No fixture"} />
+          <StatCard label="Symbols" value={String(replay?.symbol_count ?? 0)} info="How many symbols were included in the replay fixture or run scope." />
+          <StatCard label="Rows published" value={String(replay?.records_published ?? 0)} info="How many replay rows were actually emitted into Kafka for downstream processing." tone="accent" />
         </div>
       </section>
 

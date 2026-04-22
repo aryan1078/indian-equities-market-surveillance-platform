@@ -118,22 +118,26 @@ export default async function OverviewPage() {
           <StatCard
             label="Tracked universe"
             value={String(overview?.tracked_symbol_count ?? reference?.symbol_count ?? 0)}
+            info="All symbols currently present in the monitored reference universe, whether or not they are actively flagged."
             hint={`${overview?.hydrated_symbol_count ?? reference?.hydrated_count ?? 0} hydrated | ${overview?.watchlist_symbol_count ?? reference?.watchlist_count ?? 0} live watchlist`}
           />
           <StatCard
             label="Live symbols"
             value={String(overview?.live_symbol_count ?? liveMarket.length)}
+            info="Symbols that currently have a latest-session minute snapshot available in the live tape."
             hint={`${overview?.live_sector_count ?? 0} sectors active`}
             tone="accent"
           />
           <StatCard
             label="Feed state"
             value={overview?.market_mode ?? "idle"}
+            info="The ingestion mode that produced the current tape, such as replay, minute backfill, or live collection."
             hint={overview?.as_of ? formatDateTime(overview.as_of) : "No current market minute"}
           />
           <StatCard
             label="Active alerts"
             value={String(overview?.open_alert_count ?? alerts.length)}
+            info="Current-session operator alerts that are still unresolved. Older unresolved rows are tracked separately as stale."
             hint={
               staleAlertCount
                 ? `${staleAlertCount} historical unresolved`
@@ -146,12 +150,14 @@ export default async function OverviewPage() {
           <StatCard
             label="Market pressure"
             value={topSector?.sector ?? "Quiet"}
+            info="The sector with the strongest current concentration of alert activity or anomaly intensity."
             hint={topSector ? `${formatNumber(topSector.score, 3)} peak score | ${topSector.count} alerts` : "No sector concentration"}
             tone={topSector ? "critical" : "default"}
           />
           <StatCard
             label="Contagion events"
             value={String(contagion.length)}
+            info="Persisted sector-spread events where anomalous peer names confirmed a trigger inside the contagion window."
             hint="Recent operational events"
             tone="critical"
           />
