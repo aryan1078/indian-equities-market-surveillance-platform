@@ -415,6 +415,11 @@ td {
   min-width: 0;
 }
 
+.panelHeader {
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
 .alertsList,
 .stackList {
   display: grid;
