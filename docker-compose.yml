@@ -209,7 +209,7 @@ services:
     container_name: market-collector
     env_file:
       - .env
-    command: ["python", "-m", "collector.main", "replay", "--fixture", "tests/fixtures/replay_ticks.jsonl", "--speed", "30"]
+    command: ["python", "-m", "collector.main", "replay", "--fixture", "tests/fixtures/replay_ticks.real.jsonl", "--speed", "30"]
     volumes:
       - ./:/app
     profiles: ["tooling"]

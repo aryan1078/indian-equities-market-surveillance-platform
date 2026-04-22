@@ -66,29 +66,32 @@ def test_alert_summary_counts_status_and_severity():
     assert summary["severity_breakdown"] == {"critical": 1, "high": 2, "medium": 0, "low": 1}
 
 
-def test_system_scale_projection_for_full_nse_minute_footprint():
+def test_system_scale_projection_uses_loaded_intraday_scope():
     projection = _system_scale_projection(
         listed_symbols=2389,
-        hydrated_trading_days=65,
-        actual_materialized_rows=139702,
+        intraday_symbols_loaded=5,
+        intraday_trading_days_loaded=1,
+        actual_intraday_tick_and_anomaly_rows=3725,
     )
 
-    assert projection["minute_rows_per_trading_day"] == 895875
-    assert projection["minute_rows_for_loaded_window"] == 58231875
-    assert projection["minute_rows_per_year"] == 223968750
-    assert projection["tick_and_anomaly_rows_for_loaded_window"] == 116463750
-    assert projection["tick_and_anomaly_rows_per_year"] == 447937500
-    assert projection["five_year_tick_and_anomaly_rows"] == 2239687500
-    assert projection["crosses_crore_in_loaded_window"] is True
-    assert projection["crosses_crore_annually"] is True
+    assert projection["minute_rows_per_trading_day"] == 1875
+    assert projection["minute_rows_for_loaded_window"] == 1875
+    assert projection["minute_rows_per_year"] == 468750
+    assert projection["tick_and_anomaly_rows_for_loaded_window"] == 3750
+    assert projection["tick_and_anomaly_rows_per_year"] == 937500
+    assert projection["five_year_tick_and_anomaly_rows"] == 4687500
+    assert projection["current_scope_share_of_listed_universe_pct"] == 0.21
+    assert round(projection["actual_capture_vs_loaded_window_pct"], 4) == round((3725 / 3750) * 100, 4)
+    assert projection["crosses_crore_in_loaded_window"] is False
+    assert projection["crosses_crore_annually"] is False
 
 
 def test_streaming_counts_from_bulk_runs_uses_bulk_metadata_only():
     counts = _streaming_counts_from_bulk_runs(
         [
-            {"mode": "replay", "records_published": 750, "notes": {"fixture": "tests/fixtures/replay_ticks.jsonl"}},
+            {"mode": "replay", "records_published": 1875, "notes": {"fixture": "tests/fixtures/replay_ticks.real.jsonl"}},
             {
-                "mode": "minute_backfill",
+                "mode": "backfill",
                 "records_published": 10750500,
                 "notes": {"tick_rows_written": 10750500, "anomaly_rows_written": 10177255},
             },

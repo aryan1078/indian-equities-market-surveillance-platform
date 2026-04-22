@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_window = subparsers.add_parser("run-window")
     run_window.add_argument("--start-date")
     run_window.add_argument("--end-date")
-    run_window.add_argument("--latest-minute-window", action="store_true")
+    run_window.add_argument("--latest-backfill-window", "--latest-minute-window", dest="latest_backfill_window", action="store_true")
     return parser
 
 
@@ -80,13 +80,13 @@ def _coerce_date(value: Any) -> date | None:
     return date.fromisoformat(text)
 
 
-def latest_minute_backfill_window() -> tuple[date, date] | None:
+def latest_completed_backfill_window() -> tuple[date, date] | None:
     with pg_connection() as conn:
         row = conn.execute(
             """
             SELECT notes
             FROM operational.ingestion_runs
-            WHERE mode = 'minute_backfill'
+            WHERE mode = 'backfill'
               AND status = 'completed'
             ORDER BY started_at DESC
             LIMIT 1
@@ -925,14 +925,14 @@ def main() -> None:
     if args.command == "run":
         run_for_date(date.fromisoformat(args.trading_date))
     elif args.command == "run-window":
-        if args.latest_minute_window:
-            latest_window = latest_minute_backfill_window()
+        if args.latest_backfill_window:
+            latest_window = latest_completed_backfill_window()
             if latest_window is None:
-                raise SystemExit("No completed minute_backfill window with window_start/window_end metadata was found.")
+                raise SystemExit("No completed backfill window with window_start/window_end metadata was found.")
             start_date, end_date = latest_window
         else:
             if not args.start_date or not args.end_date:
-                raise SystemExit("run-window requires --start-date and --end-date, or use --latest-minute-window.")
+                raise SystemExit("run-window requires --start-date and --end-date, or use --latest-backfill-window.")
             start_date = date.fromisoformat(args.start_date)
             end_date = date.fromisoformat(args.end_date)
         if start_date > end_date:

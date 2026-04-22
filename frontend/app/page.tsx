@@ -86,9 +86,9 @@ export default async function OverviewPage() {
     {
       href: "/replay",
       eyebrow: "Operate",
-      title: "Replay control",
+      title: "Session replay",
       metric: overview?.market_mode ?? "idle",
-      hint: overview?.as_of ? `Latest minute ${formatDateTime(overview.as_of)}` : "Ready for deterministic replay",
+      hint: overview?.as_of ? `Latest live bar ${formatDateTime(overview.as_of)}` : "Ready for captured-session replay",
     },
   ];
 
@@ -122,8 +122,8 @@ export default async function OverviewPage() {
           <StatCard
             label="Feed state"
             value={overview?.market_mode ?? "idle"}
-            info="The ingestion mode that produced the current tape, such as replay, minute backfill, or live collection."
-            hint={overview?.as_of ? formatDateTime(overview.as_of) : "No current market minute"}
+            info="The ingestion mode that produced the current tape, such as captured replay, real backfill, or live collection."
+            hint={overview?.as_of ? formatDateTime(overview.as_of) : "No current market bar"}
           />
           <StatCard
             label="Active alerts"

@@ -1,11 +1,12 @@
 # Indian Equities Market Surveillance Platform
 
-Distributed market surveillance, anomaly detection, contagion analysis, and warehouse analytics for Indian equities. The platform is built as a replay-first, presentation-ready stack around Kafka, Cassandra, Redis, PostgreSQL, FastAPI, and Next.js.
+Distributed market surveillance, anomaly detection, contagion analysis, and warehouse analytics for Indian equities. The platform now runs in strict real-data mode: live and recent intraday bars come from real market feeds, older history can use real coarser bars, and replay only re-emits captured real sessions.
 
 ## What This System Does
 
-- Ingests minute bars for Indian equities from `yfinance`, replay fixtures, or live polling.
-- Streams normalized intraday records through Kafka so multiple services can process the same market feed deterministically.
+- Ingests real market bars for Indian equities from `yfinance` today, with optional `Upstox` support wired through the same collector contract when credentials are supplied.
+- Captures replay fixtures only from real market sessions; synthetic generators and fake minute expansion are no longer part of the runtime path.
+- Streams normalized market records through Kafka so multiple services can process the same market feed reproducibly.
 - Persists append-heavy operational facts in Cassandra and hot operator state in Redis.
 - Detects price and volume anomalies in near real time using EWMA-based scoring.
 - Detects sector contagion windows and stores those operational events in PostgreSQL.
@@ -16,7 +17,7 @@ Distributed market surveillance, anomaly detection, contagion analysis, and ware
 
 ```mermaid
 flowchart LR
-    A["yfinance backfill / live collector / replay fixture"] --> B["Kafka: market_ticks"]
+    A["real provider backfill / live collector / captured replay"] --> B["Kafka: market_ticks"]
     B --> C["Storage consumer"]
     B --> D["Anomaly engine"]
     C --> E["Cassandra: market_ticks + latest_market_state"]
@@ -44,13 +45,13 @@ flowchart LR
 - `Warehouse Analyst`: visual query builder over curated warehouse datasets with charts, CSV export, and print-to-PDF reporting.
 - `Process`: step-by-step explanation of the entire pipeline from ingestion to warehouse analytics.
 - `Methodology`: formulas, thresholds, signal semantics, and alert logic explained in product terms.
-- `Replay`: deterministic demo controls for running the platform outside market hours.
+- `Replay`: captured-session replay controls for running the platform outside market hours without leaving real data behind.
 - `System`: health, scale, run history, storage footprint, and operational readiness.
 
 ## Data Stores And Their Roles
 
-- `Kafka`: replayable transport for ticks and anomaly detections.
-- `Cassandra`: operational minute-grain storage for market ticks and anomaly metrics.
+- `Kafka`: replayable transport for normalized market bars and anomaly detections.
+- `Cassandra`: operational intraday storage for market bars and anomaly metrics.
 - `Redis`: anomaly engine restart state, latest market views, latest anomaly views, and freshness markers.
 - `PostgreSQL operational schema`: ingestion runs, ETL runs, alerts, and contagion events.
 - `PostgreSQL warehouse schema`: stock, sector, date, time, and exchange dimensions plus fact tables and materialized views for analytics.
@@ -58,7 +59,7 @@ flowchart LR
 ## Monorepo Layout
 
 - `infra/`: Dockerfiles, Cassandra schema, PostgreSQL init and runtime migrations, and Redis config.
-- `services/collector`: backfill, replay, and live polling collectors.
+- `services/collector`: real-data backfill, captured replay, purge, and live polling collectors.
 - `services/storage-consumer`: Kafka-to-Cassandra storage path.
 - `services/anomaly-engine`: streaming anomaly detection and Redis state management.
 - `services/contagion-engine`: sector-aware contagion detection and recompute tooling.
@@ -153,12 +154,18 @@ powershell -ExecutionPolicy Bypass -File .\shared\scripts\install_startup_shortc
 
 ## Data Collection Modes
 
-### Replay
+### Captured Replay
 
-Deterministic replay is the default demo mode. It is designed to work when the market is closed while still exercising Kafka, Cassandra, Redis, contagion detection, ETL, and the warehouse layer.
+Replay is now real-data-only. A fixture must be captured from an actual market session first, and replay simply re-emits those normalized real bars through Kafka, Cassandra, Redis, contagion detection, ETL, and the warehouse layer.
 
 ```powershell
-docker compose --profile tooling run --rm collector python -m collector.main replay --fixture tests/fixtures/replay_ticks.jsonl --speed 30
+docker compose --profile tooling run --rm collector python -m collector.main replay --fixture tests/fixtures/replay_ticks.real.jsonl --speed 30
+```
+
+To capture a fresh real replay session:
+
+```powershell
+docker compose --profile tooling run --rm collector python -m collector.main capture-replay --symbols RELIANCE.NS HDFCBANK.NS ICICIBANK.NS INFY.NS TCS.NS --period 5d --interval 1m --output tests/fixtures/replay_ticks.real.jsonl
 ```
 
 ### Live Market Polling
@@ -171,6 +178,21 @@ docker compose --profile live up -d collector-live
 
 ```powershell
 docker compose --profile tooling run --rm collector python -m collector.main backfill --symbols RELIANCE.NS TCS.NS INFY.NS
+```
+
+Useful backfill switches:
+
+- `--interval 1m|5m|15m|1h|1d`
+- `--period 5d|1mo|3mo|1y`
+- `--start-date YYYY-MM-DD --end-date YYYY-MM-DD`
+- `--persist` to update the default captured real replay file
+
+### Purging Old Synthetic-Derived State
+
+If you are migrating an older mixed-data database, wipe the synthetic-derived operational and warehouse state before reloading:
+
+```powershell
+docker compose --profile tooling run --rm collector python -m collector.main purge-derived
 ```
 
 ## Warehouse And Analyst Features
@@ -244,15 +266,16 @@ For a polished demo, the recommended path is:
 5. Open `Contagion` for sector propagation events
 6. Open `Warehouse` and `Warehouse Analyst`
 7. Open `Process` and `Methodology` for architecture and formula walkthroughs
-8. Use `Replay` if you need a deterministic after-hours demo
+8. Use `Replay` if you need an after-hours demo sourced from a captured real session
 
 ## Design Principles
 
 - UTC is the system of record for timestamps; IST trading semantics are preserved for business logic and UI.
+- The platform is strict real-data-only at runtime; replay is allowed only for fixtures captured from real sessions.
 - Cassandra is used only for operational write-heavy access patterns, not warehouse-style OLAP.
 - Contagion events are kept relational because they are dashboard- and join-friendly.
 - Warehouse facts are separated by grain rather than mixed into a single ambiguous table.
-- Replay mode is a first-class capability, not an afterthought.
+- Captured replay is a first-class capability, not an afterthought.
 
 ## Contributors
 

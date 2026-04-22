@@ -10,6 +10,7 @@ import pandas as pd
 import yfinance as yf
 
 from .db import pg_connection
+from .market_data import download_market_frames, preferred_market_data_provider
 from .metadata import StockReference, load_stock_references, valid_peer_sector
 from .settings import get_settings
 
@@ -131,29 +132,12 @@ def _normalize_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
 def _download_batch(symbols: list[str], period: str) -> dict[str, pd.DataFrame]:
     if not symbols:
         return {}
-    payload = yf.download(
-        tickers=" ".join(symbols),
-        period=period,
-        interval="1d",
-        auto_adjust=False,
-        progress=False,
-        threads=False,
-        group_by="ticker",
-    )
-    if isinstance(payload.columns, pd.MultiIndex):
-        frames: dict[str, pd.DataFrame] = {}
-        for symbol in symbols:
-            try:
-                candidate = payload[symbol]
-            except KeyError:
-                continue
-            candidate = _normalize_daily_frame(candidate)
-            if not candidate.empty:
-                frames[symbol] = candidate
-        return frames
-
-    single = _normalize_daily_frame(payload)
-    return {symbols[0]: single} if not single.empty else {}
+    provider_frames = download_market_frames(symbols, interval="1d", period=period)
+    return {
+        symbol: _normalize_daily_frame(provider_frame.frame)
+        for symbol, provider_frame in provider_frames.items()
+        if provider_frame.frame is not None and not provider_frame.frame.empty
+    }
 
 
 def _download_with_retry(symbol: str, period: str, attempts: int = 4) -> pd.DataFrame | None:
@@ -175,7 +159,7 @@ def _chunked(values: list[str], size: int) -> Iterable[list[str]]:
         yield values[index : index + chunk_size]
 
 
-def store_daily_history(symbol: str, frame: pd.DataFrame) -> int:
+def store_daily_history(symbol: str, frame: pd.DataFrame, source_provider: str = "yfinance") -> int:
     if frame.empty:
         return 0
 
@@ -187,7 +171,7 @@ def store_daily_history(symbol: str, frame: pd.DataFrame) -> int:
                 """
                 INSERT INTO operational.stock_daily_bars (
                     symbol, trading_date, open, high, low, close, adj_close, volume, dividends, stock_splits, source, refreshed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'yfinance', now())
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (symbol, trading_date) DO UPDATE
                 SET open = EXCLUDED.open,
                     high = EXCLUDED.high,
@@ -210,6 +194,7 @@ def store_daily_history(symbol: str, frame: pd.DataFrame) -> int:
                     int(row.get("Volume", 0) or 0),
                     float(row.get("Dividends", 0.0) or 0.0),
                     float(row.get("Stock Splits", 0.0) or 0.0),
+                    source_provider,
                 ),
             )
             inserted += 1
@@ -224,6 +209,7 @@ def hydrate_daily_history(symbols: Iterable[str] | None = None, period: str | No
     period_value = period or settings.daily_history_period
     batch_size = max(settings.daily_history_batch_size, 1)
     pause_seconds = max(settings.daily_history_pause_seconds, 0.0)
+    provider_name = preferred_market_data_provider()
 
     for chunk in _chunked(selected, batch_size):
         frames: dict[str, pd.DataFrame] = {}
@@ -238,13 +224,13 @@ def hydrate_daily_history(symbols: Iterable[str] | None = None, period: str | No
             if _empty_frame(frame):
                 missing_symbols.append(symbol)
                 continue
-            results[symbol] = store_daily_history(symbol, frame)
+            results[symbol] = store_daily_history(symbol, frame, source_provider=provider_name)
 
         for symbol in missing_symbols:
             frame = _download_with_retry(symbol, period_value)
             if _empty_frame(frame):
                 continue
-            results[symbol] = store_daily_history(symbol, frame)
+            results[symbol] = store_daily_history(symbol, frame, source_provider=provider_name)
             if pause_seconds:
                 time.sleep(min(pause_seconds, 0.75))
 
@@ -312,6 +298,7 @@ def _resolve_unknown_profile(symbol: str, attempts: int = 3) -> tuple[str, str |
 def ensure_daily_history(symbol_input: str, minimum_days: int | None = None) -> str | None:
     lookup = _metadata_lookup()
     candidates = candidate_symbols(symbol_input)
+    provider_name = preferred_market_data_provider()
 
     for symbol in candidates:
         reference = lookup.get(symbol)
@@ -335,7 +322,7 @@ def ensure_daily_history(symbol_input: str, minimum_days: int | None = None) -> 
         frame = _download_with_retry(symbol, get_settings().daily_history_period)
         if _empty_frame(frame):
             continue
-        store_daily_history(symbol, frame)
+        store_daily_history(symbol, frame, source_provider=provider_name)
         reference = lookup.get(symbol)
         if reference:
             company_name = reference.company_name
@@ -365,7 +352,7 @@ def ensure_daily_history(symbol_input: str, minimum_days: int | None = None) -> 
                 exchange=exchange,
                 sector=sector,
                 aliases=[normalize_symbol_input(symbol_input)],
-                source="yfinance",
+                source=provider_name,
             )
         return symbol
 

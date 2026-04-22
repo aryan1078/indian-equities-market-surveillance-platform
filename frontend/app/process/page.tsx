@@ -96,7 +96,7 @@ export default async function ProcessPage() {
   const ingestionRuns = Array.isArray(runs?.ingestion_runs) ? runs.ingestion_runs : [];
   const etlRuns = Array.isArray(runs?.etl_runs) ? runs.etl_runs : [];
   const latestBackfillRun = ingestionRuns.find(
-    (run) => readString(asRecord(run), "mode") === "minute_backfill" && readString(asRecord(run), "status") === "completed",
+    (run) => readString(asRecord(run), "mode") === "backfill" && readString(asRecord(run), "status") === "completed",
   );
   const latestReplayRun =
     ingestionRuns.find(
@@ -111,6 +111,9 @@ export default async function ProcessPage() {
   const listedSymbols = health?.universe_inventory?.listed_symbols ?? scale?.coverage.listed_symbols ?? 0;
   const hydratedSymbols = health?.universe_inventory?.hydrated_symbols ?? scale?.coverage.hydrated_symbols ?? 0;
   const sectorCoveragePct = health?.universe_inventory?.sector_coverage_pct ?? 0;
+  const dailyTradingDaysLoaded = scale?.coverage.daily_trading_days_loaded ?? scale?.coverage.trading_days_loaded ?? 0;
+  const intradayTradingDaysLoaded = scale?.coverage.intraday_trading_days_loaded ?? 0;
+  const intradaySymbolsLoaded = scale?.coverage.intraday_symbols_loaded ?? 0;
   const materializedRows = scale?.actual.materialized_total_rows ?? 0;
   const warehouseMinuteFacts = summary?.anomaly_minute_rows ?? 0;
   const loadedWindowProjection = scale?.projection.tick_and_anomaly_rows_for_loaded_window ?? 0;
@@ -189,13 +192,13 @@ export default async function ProcessPage() {
 
   const volumeBars = [
     {
-      label: "Latest full-NSE backfill ticks",
+      label: "Latest real backfill ticks",
       value: backfillTickRows,
       detail: backfillWindowStart && backfillWindowEnd ? `${formatDate(backfillWindowStart)} to ${formatDate(backfillWindowEnd)}` : "Latest completed bulk ingestion",
       tone: "accent" as const,
     },
     {
-      label: "Latest full-NSE anomaly rows",
+      label: "Latest backfill anomaly rows",
       value: backfillAnomalyRows,
       detail: "Streaming anomaly engine output from the same run",
       tone: "warning" as const,
@@ -207,15 +210,15 @@ export default async function ProcessPage() {
       tone: "critical" as const,
     },
     {
-      label: "Loaded-window projection",
+      label: "Loaded intraday scope",
       value: loadedWindowProjection,
-      detail: `${scale?.coverage.trading_days_loaded ?? 0} hydrated daily sessions at full-NSE minute grain`,
+      detail: `${intradaySymbolsLoaded} symbols across ${intradayTradingDaysLoaded} loaded intraday session${intradayTradingDaysLoaded === 1 ? "" : "s"}`,
       tone: "warning" as const,
     },
     {
-      label: "Annual tick + anomaly projection",
+      label: "Annual projection at current scope",
       value: annualProjection,
-      detail: `${scale?.projection.trading_days_per_year ?? 250} trading sessions`,
+      detail: `${scale?.projection.trading_days_per_year ?? 250} trading sessions at the current real intraday scope`,
       tone: "success" as const,
     },
   ];
@@ -256,18 +259,18 @@ export default async function ProcessPage() {
           step: "1",
           title: "Market source",
           text: "Minute and daily bars arrive from the ingestion source as OHLCV rows, preserving dividends and stock-split fields so downstream loaders never silently discard corporate-action columns.",
-          meta: methodology?.market.scope ?? "Indian equities minute market scope",
+          meta: methodology?.market.scope ?? "Indian equities real-data scope",
         },
         {
           step: "2",
           title: "Collector + normalization",
-          text: "The collector resolves symbol form, exchange, UTC and IST timestamps, trading date, interval, and deterministic dedupe identity before any event is published.",
+          text: "The collector resolves symbol form, exchange, UTC and IST timestamps, trading date, interval, and a stable dedupe identity before any event is published.",
           meta: `Latest bulk provider ${backfillProvider}`,
         },
         {
           step: "3",
           title: "Kafka topics",
-          text: "Canonical tick events are keyed by symbol and published into the event bus so storage, anomaly detection, replay, and recovery all consume the same ordered stream.",
+          text: "Canonical market-bar events are keyed by symbol and published into the event bus so storage, anomaly detection, captured replay, and recovery all consume the same ordered stream.",
           meta: `${formatCompactIndian(backfillTickRows, 2)} rows published in latest bulk run`,
         },
       ],
@@ -338,26 +341,26 @@ export default async function ProcessPage() {
     {
       step: "02",
       title: "Normalize and canonicalize each event",
-      body: "Before anything is published, the collector standardizes symbol names, exchange-local and UTC timestamps, trading date, interval, source metadata, and row identity. That is what lets live collection, deterministic replay, and full backfill all feed the same downstream contracts.",
+      body: "Before anything is published, the collector standardizes symbol names, exchange-local and UTC timestamps, trading date, interval, source metadata, and row identity. That is what lets live collection, captured real-session replay, and historical backfill all feed the same downstream contracts.",
       details: [
         { label: "Canonical fields", value: "symbol, exchange, UTC/IST timestamps, trading date, interval" },
         { label: "Data quality", value: "market-hours filtering, null checks, duplicate suppression" },
         { label: "Hydrated symbols", value: `${hydratedSymbols.toLocaleString("en-IN")}` },
         { label: "Sector coverage", value: `${formatNumber(sectorCoveragePct, 2)}%` },
       ],
-      tags: ["schema", "validation", "IST", "replay-safe"],
+      tags: ["schema", "validation", "IST", "real-data-safe"],
     },
     {
       step: "03",
       title: "Publish the event stream through Kafka",
-      body: "Kafka is the transport backbone. Every normalized tick is emitted as an ordered per-symbol event so storage and analytics consumers can scale independently, recover by replay, and stay deterministic.",
+      body: "Kafka is the transport backbone. Every normalized bar is emitted as an ordered per-symbol event so storage and analytics consumers can scale independently, recover by replay, and stay reproducible.",
       details: [
         { label: "Latest bulk run", value: shortId(readString(asRecord(latestBackfillRun), "run_id")) },
         { label: "Rows published", value: formatCompactIndian(backfillTickRows, 2) },
         { label: "Partitions processed", value: formatCompactIndian(backfillPartitions, 0) },
         { label: "Trading-day window", value: `${backfillTradingDays} sessions` },
       ],
-      tags: ["market_ticks", "ordered-by-symbol", "decoupling", "replay"],
+      tags: ["market_ticks", "ordered-by-symbol", "decoupling", "captured-replay"],
     },
     {
       step: "04",
@@ -426,7 +429,7 @@ export default async function ProcessPage() {
       title: "Kafka",
       value: "Event spine",
       description:
-        "Carries normalized market ticks and derived anomaly streams. Replay uses the same contract, which is what makes the demo deterministic and the consumers decoupled.",
+        "Carries normalized market bars and derived anomaly streams. Captured session replay uses the same contract, which keeps the demo honest and the consumers decoupled.",
       tone: "accent" as const,
     },
     {
@@ -789,8 +792,9 @@ export default async function ProcessPage() {
         </div>
         <div className="statusNote">
           The platform currently covers {listedSymbols.toLocaleString("en-IN")} listed NSE symbols, {hydratedSymbols.toLocaleString("en-IN")} hydrated histories,{" "}
-          {formatCompactIndian(materializedRows, 2)} materialized rows across the operational and analytical layers, and a loaded-window projection of{" "}
-          {formatCompactIndian(loadedWindowProjection, 2)} tick-plus-anomaly rows.
+          {formatCompactIndian(materializedRows, 2)} materialized rows across the operational and analytical layers, and an active real intraday scope of{" "}
+          {intradaySymbolsLoaded.toLocaleString("en-IN")} symbols across {intradayTradingDaysLoaded.toLocaleString("en-IN")} loaded intraday session
+          {intradayTradingDaysLoaded === 1 ? "" : "s"}.
         </div>
         <div className="statsGrid">
           <StatCard
@@ -803,19 +807,19 @@ export default async function ProcessPage() {
             label="Hydrated histories"
             value={hydratedSymbols.toLocaleString("en-IN")}
             info="Symbols whose historical bars and metadata are already loaded and available for analytics."
-            hint={`${(scale?.coverage.trading_days_loaded ?? 0).toLocaleString("en-IN")} daily sessions loaded`}
+            hint={`${dailyTradingDaysLoaded.toLocaleString("en-IN")} daily sessions loaded`}
             tone="accent"
           />
           <StatCard
             label="Latest bulk ticks"
             value={formatCompactIndian(backfillTickRows, 2)}
-            info="Tick rows published by the latest full-NSE minute backfill run."
+            info="Tick rows published by the latest completed real backfill run."
             hint={backfillTradingDays ? `${backfillTradingDays} trading days | ${backfillProvider}` : "Latest completed backfill"}
           />
           <StatCard
             label="Latest bulk anomalies"
             value={formatCompactIndian(backfillAnomalyRows, 2)}
-            info="Anomaly rows produced from the latest full-NSE streaming backfill."
+            info="Anomaly rows produced from the latest completed real backfill."
             hint={`${formatCompactIndian(backfillStateRows, 2)} latest-state rows refreshed`}
             tone="warning"
           />
@@ -827,23 +831,23 @@ export default async function ProcessPage() {
             tone="critical"
           />
           <StatCard
-            label="Loaded-window projection"
+            label="Loaded intraday scope"
             value={formatCompactIndian(loadedWindowProjection, 2)}
-            info="Projected tick-plus-anomaly rows if the currently loaded historical window is fully materialized at full-NSE minute grain."
-            hint={`${formatNumber(scale?.projection.actual_materialized_vs_loaded_window_pct, 1)}% already materialized`}
+            info="Projected tick-plus-anomaly rows for the intraday symbol set and sessions that are actually loaded with real bars."
+            hint={`${formatNumber(scale?.projection.actual_capture_vs_loaded_window_pct, 1)}% of projected raw tick+anomaly rows captured`}
           />
           <StatCard
-            label="Annual projection"
+            label="Annual projection at current scope"
             value={formatCompactIndian(annualProjection, 2)}
-            info="Projected tick-plus-anomaly rows across one full trading year at full-NSE minute scope."
+            info="Projected tick-plus-anomaly rows across one full trading year if the currently loaded intraday scope is maintained."
             hint={`${scale?.projection.trading_days_per_year ?? 250} sessions`}
             tone="warning"
           />
           <StatCard
-            label="Five-year runway"
+            label="Five-year projection"
             value={formatCompactIndian(fiveYearProjection, 2)}
-            info="Five-year projection used to defend the platform's large-scale data story."
-            hint="Crore-scale archive path"
+            info="Five-year projection for the currently loaded real intraday scope."
+            hint={`${formatNumber(scale?.projection.current_scope_share_of_listed_universe_pct, 2)}% of the listed universe currently materialized intraday`}
             tone="critical"
           />
         </div>
@@ -898,7 +902,7 @@ export default async function ProcessPage() {
         <div className="panelHeader">
           <div>
             <p className="panelEyebrow">Figure 1A</p>
-            <h3 className="panelTitle">One real market minute as it travels through the stack</h3>
+            <h3 className="panelTitle">One real market bar as it travels through the stack</h3>
           </div>
           <span className="panelMeta">
             {exampleWorkspace?.reference.company_name ?? exampleSymbol} | {exampleTick?.timestamp_ist ? formatDateTime(exampleTick.timestamp_ist) : "Example minute"}
@@ -961,7 +965,7 @@ export default async function ProcessPage() {
           </div>
           <div className="figureCaption">
             The collector adds the business identity and audit fields that downstream consumers need: symbol, exchange, sector, UTC and IST timestamps, trading date,
-            interval, source, run ID, and a deterministic dedupe key.
+            interval, source, run ID, and a stable dedupe key.
           </div>
         </article>
 
@@ -1141,7 +1145,7 @@ export default async function ProcessPage() {
           <div className="panelHeader">
             <div>
               <p className="panelEyebrow">Run figure</p>
-              <h3 className="panelTitle">Latest full-NSE backfill</h3>
+              <h3 className="panelTitle">Latest real backfill</h3>
             </div>
             <span className="panelMeta">{shortId(readString(asRecord(latestBackfillRun), "run_id"))}</span>
           </div>
@@ -1177,7 +1181,7 @@ export default async function ProcessPage() {
           <div className="panelHeader">
             <div>
               <p className="panelEyebrow">Run figure</p>
-              <h3 className="panelTitle">Deterministic replay path</h3>
+              <h3 className="panelTitle">Captured real replay path</h3>
             </div>
             <span className="panelMeta">{shortId(readString(asRecord(latestReplayRun), "run_id") ?? replay?.run_id)}</span>
           </div>
@@ -1204,7 +1208,7 @@ export default async function ProcessPage() {
             </div>
             <div className="keyValueCard">
               <span>Purpose</span>
-              <strong>Closed-market demo and deterministic validation</strong>
+              <strong>Closed-market validation using captured real data</strong>
             </div>
           </div>
         </article>
@@ -1420,17 +1424,17 @@ export default async function ProcessPage() {
             tone: "warning",
           },
           {
-            title: "Crore-scale story",
+            title: "Current real-data scope",
             value: formatCompactIndian(loadedWindowProjection, 2),
             description:
-              "The loaded historical window already projects into multi-crore tick-plus-anomaly rows, and the annual path scales far beyond that without changing the analytical model.",
+              "The projection here is intentionally tied to the real intraday bars currently loaded, so the scale story stays honest after synthetic expansion was removed from the platform.",
             tone: "critical",
           },
           {
-            title: "Deterministic demos",
+            title: "Captured session replays",
             value: `${latestReplaySymbols} symbols / ${latestReplayRows} rows`,
             description:
-              "Replay reuses the same pipeline as ingestion, so the architecture remains demonstrable and testable even when the market is closed.",
+              "Replay reuses the same pipeline as ingestion, using captured real sessions so the architecture stays testable even when the market is closed.",
           },
         ]}
       />

@@ -585,13 +585,19 @@ export type SystemScaleResponse = {
     hydrated_symbols: number;
     first_daily_date?: string | null;
     last_daily_date?: string | null;
+    daily_trading_days_loaded: number;
+    intraday_symbols_loaded: number;
+    intraday_trading_days_loaded: number;
+    first_intraday_date?: string | null;
+    last_intraday_date?: string | null;
     trading_days_loaded: number;
   };
   projection: {
     session_minutes: number;
     trading_days_per_year: number;
     listed_symbols: number;
-    hydrated_trading_days: number;
+    intraday_symbols_loaded: number;
+    intraday_trading_days_loaded: number;
     minute_rows_per_trading_day: number;
     minute_rows_for_loaded_window: number;
     minute_rows_per_year: number;
@@ -600,7 +606,8 @@ export type SystemScaleResponse = {
     five_year_tick_and_anomaly_rows: number;
     crosses_crore_in_loaded_window: boolean;
     crosses_crore_annually: boolean;
-    actual_materialized_vs_loaded_window_pct: number;
+    actual_capture_vs_loaded_window_pct: number;
+    current_scope_share_of_listed_universe_pct: number;
   };
 };
 

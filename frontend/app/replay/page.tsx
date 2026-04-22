@@ -12,7 +12,7 @@ export default async function ReplayPage() {
         <div className="pageHeader">
           <div>
             <p className="pageKicker">Replay</p>
-            <h2 className="pageTitle">Replay control</h2>
+            <h2 className="pageTitle">Captured session replay</h2>
           </div>
           <div className="pageMetaGroup">
             <span className="metaTag">{replay?.status ?? "idle"}</span>
@@ -20,8 +20,8 @@ export default async function ReplayPage() {
           </div>
         </div>
         <div className="statsGrid">
-          <StatCard label="Run" value={shortId(replay?.run_id)} info="The unique replay execution identifier for the latest deterministic demo run." hint={replay?.run_id ?? "No replay run"} />
-          <StatCard label="Fixture" value={fixtureLabel(fixture)} info="The stored market sample that is being re-emitted through the pipeline during replay mode." hint={fixture ?? "No fixture"} />
+          <StatCard label="Run" value={shortId(replay?.run_id)} info="The unique replay execution identifier for the latest captured real-session run." hint={replay?.run_id ?? "No replay run"} />
+          <StatCard label="Fixture" value={fixtureLabel(fixture)} info="A captured real market session stored as normalized bars and re-emitted through the pipeline during replay." hint={fixture ?? "No fixture"} />
           <StatCard label="Symbols" value={String(replay?.symbol_count ?? 0)} info="How many symbols were included in the replay fixture or run scope." />
           <StatCard label="Rows published" value={String(replay?.records_published ?? 0)} info="How many replay rows were actually emitted into Kafka for downstream processing." tone="accent" />
         </div>
@@ -32,7 +32,7 @@ export default async function ReplayPage() {
           <div className="panelHeader">
             <div>
               <p className="panelEyebrow">Run metadata</p>
-              <h3 className="panelTitle">Latest replay</h3>
+              <h3 className="panelTitle">Latest captured replay</h3>
             </div>
           </div>
           <div className="stackList">
@@ -68,8 +68,8 @@ export default async function ReplayPage() {
         <article className="surface">
           <div className="panelHeader">
             <div>
-              <p className="panelEyebrow">Fixture</p>
-              <h3 className="panelTitle">Replay source</h3>
+              <p className="panelEyebrow">Source file</p>
+              <h3 className="panelTitle">Captured market sample</h3>
             </div>
           </div>
           <div className="stackList">

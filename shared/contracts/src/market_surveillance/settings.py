@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0", alias="API_HOST")
     api_port: int = Field(default=8000, alias="API_PORT")
 
+    market_data_provider: Literal["auto", "yfinance", "upstox"] = Field(default="auto", alias="MARKET_DATA_PROVIDER")
+    market_data_timeout_seconds: float = Field(default=20.0, alias="MARKET_DATA_TIMEOUT_SECONDS")
+    strict_real_data_only: bool = Field(default=True, alias="STRICT_REAL_DATA_ONLY")
+    upstox_api_base_url: str = Field(default="https://api.upstox.com", alias="UPSTOX_API_BASE_URL")
+    upstox_access_token: str | None = Field(default=None, alias="UPSTOX_ACCESS_TOKEN")
+
     anomaly_price_z_threshold: float = Field(default=2.4, alias="ANOMALY_PRICE_Z_THRESHOLD")
     anomaly_volume_z_threshold: float = Field(default=2.0, alias="ANOMALY_VOLUME_Z_THRESHOLD")
     anomaly_composite_threshold: float = Field(default=2.2, alias="ANOMALY_COMPOSITE_THRESHOLD")

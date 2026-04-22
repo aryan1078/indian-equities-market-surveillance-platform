@@ -33,6 +33,9 @@ export default async function SystemPage() {
   const unknownSectorCount = health?.universe_inventory?.unknown_sector_symbols ?? 0;
   const sectorCoveragePct = health?.universe_inventory?.sector_coverage_pct ?? 0;
   const coveragePct = listedCount ? `${Math.round((hydratedCount / listedCount) * 100)}%` : "0%";
+  const dailyTradingDaysLoaded = scale?.coverage.daily_trading_days_loaded ?? scale?.coverage.trading_days_loaded ?? 0;
+  const intradayTradingDaysLoaded = scale?.coverage.intraday_trading_days_loaded ?? 0;
+  const intradaySymbolsLoaded = scale?.coverage.intraday_symbols_loaded ?? 0;
   const latestSuccessfulEtl = health?.latest_successful_etl_run ?? health?.latest_etl_run;
   const latestEtlAttempt = health?.latest_etl_attempt ?? latestSuccessfulEtl;
   const latestFailedEtl = health?.latest_failed_etl_run;
@@ -81,25 +84,25 @@ export default async function SystemPage() {
         {
           label: "Minute rows per trading day",
           value: scale.projection.minute_rows_per_trading_day,
-          detail: `${scale.projection.listed_symbols} symbols x ${scale.projection.session_minutes} minutes`,
+          detail: `${scale.projection.intraday_symbols_loaded} loaded symbols x ${scale.projection.session_minutes} minutes`,
           tone: "accent" as const,
         },
         {
-          label: "Current loaded window",
+          label: "Loaded intraday scope",
           value: scale.projection.tick_and_anomaly_rows_for_loaded_window,
-          detail: `${scale.projection.hydrated_trading_days} trading days with tick + anomaly materialization`,
+          detail: `${scale.projection.intraday_trading_days_loaded} intraday session${scale.projection.intraday_trading_days_loaded === 1 ? "" : "s"} with tick + anomaly materialization`,
           tone: "warning" as const,
         },
         {
-          label: "One trading year",
+          label: "One trading year at current scope",
           value: scale.projection.tick_and_anomaly_rows_per_year,
-          detail: `${scale.projection.trading_days_per_year} sessions of tick + anomaly rows`,
+          detail: `${scale.projection.trading_days_per_year} sessions using the current real intraday symbol set`,
           tone: "critical" as const,
         },
         {
-          label: "Five-year runway",
+          label: "Five-year runway at current scope",
           value: scale.projection.five_year_tick_and_anomaly_rows,
-          detail: "full-NSE minute stream and anomaly archive",
+          detail: `${scale.projection.current_scope_share_of_listed_universe_pct}% of the listed universe currently materialized intraday`,
           tone: "success" as const,
         },
       ]
@@ -150,24 +153,28 @@ export default async function SystemPage() {
             hint={scale ? `${scale.actual.materialized_total_rows.toLocaleString("en-IN")} across stores` : "Inventory snapshot"}
           />
           <StatCard
-            label="Loaded-window scale"
+            label="Loaded intraday scope"
             value={formatCompactIndian(scale?.projection.tick_and_anomaly_rows_for_loaded_window, 2)}
-            info="Projected tick-plus-anomaly row count for the currently loaded historical window at full-NSE minute grain."
-            hint={scale ? `${scale.coverage.trading_days_loaded} trading days at full-NSE minute resolution` : "Projection unavailable"}
+            info="Projected tick-plus-anomaly row count for the real intraday symbol set and sessions that are actually loaded right now."
+            hint={
+              scale
+                ? `${intradaySymbolsLoaded} symbols across ${intradayTradingDaysLoaded} intraday session${intradayTradingDaysLoaded === 1 ? "" : "s"}`
+                : "Projection unavailable"
+            }
             tone="warning"
           />
           <StatCard
-            label="Annual scale"
+            label="Annual scale at current scope"
             value={formatCompactIndian(scale?.projection.tick_and_anomaly_rows_per_year, 2)}
-            info="Projected yearly tick-plus-anomaly row volume if the full NSE universe is monitored at minute resolution."
-            hint="Tick plus anomaly rows per trading year"
+            info="Projected yearly tick-plus-anomaly row volume if the currently loaded real intraday scope continues across a full trading year."
+            hint={`${scale?.projection.trading_days_per_year ?? 250} trading sessions`}
             tone="critical"
           />
           <StatCard
             label="Hydrated"
             value={String(hydratedCount)}
             info="Listed symbols whose historical bars and metadata are already loaded and ready for analytics."
-            hint={`${health?.database_inventory?.daily_bars ?? 0} daily bars | ${coveragePct} coverage`}
+            hint={`${health?.database_inventory?.daily_bars ?? 0} daily bars | ${dailyTradingDaysLoaded} daily sessions | ${coveragePct} coverage`}
           />
           <StatCard
             label="Sector coverage"
@@ -236,10 +243,10 @@ export default async function SystemPage() {
           <div className="panelHeader">
             <div>
               <p className="panelEyebrow">Scale story</p>
-              <h3 className="panelTitle">Crore-level projection</h3>
+              <h3 className="panelTitle">Real intraday scope projection</h3>
             </div>
             <span className="panelMeta">
-              {scale?.projection.crosses_crore_annually ? "crore-ready" : "below crore"}
+              {intradaySymbolsLoaded} symbols | {intradayTradingDaysLoaded} sessions
             </span>
           </div>
           <IntensityBars

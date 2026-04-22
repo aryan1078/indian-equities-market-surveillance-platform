@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trading-date")
     parser.add_argument("--start-date")
     parser.add_argument("--end-date")
-    parser.add_argument("--latest-minute-window", action="store_true")
+    parser.add_argument("--latest-backfill-window", "--latest-minute-window", dest="latest_backfill_window", action="store_true")
     parser.add_argument("--source-run-id")
     return parser.parse_args()
 
@@ -36,13 +36,13 @@ def _coerce_date(value: Any) -> date | None:
     return date.fromisoformat(text)
 
 
-def latest_minute_backfill_window() -> tuple[date, date] | None:
+def latest_completed_backfill_window() -> tuple[date, date] | None:
     with pg_connection() as conn:
         row = conn.execute(
             """
             SELECT notes
             FROM operational.ingestion_runs
-            WHERE mode = 'minute_backfill'
+            WHERE mode = 'backfill'
               AND status = 'completed'
             ORDER BY started_at DESC
             LIMIT 1
@@ -207,10 +207,10 @@ def recompute_window(start_date: date, end_date: date, source_run_id: str | None
 
 def main() -> None:
     args = parse_args()
-    if args.latest_minute_window:
-        latest_window = latest_minute_backfill_window()
+    if args.latest_backfill_window:
+        latest_window = latest_completed_backfill_window()
         if latest_window is None:
-            raise SystemExit("No completed minute_backfill window with window_start/window_end metadata was found.")
+            raise SystemExit("No completed backfill window with window_start/window_end metadata was found.")
         start_date, end_date = latest_window
         recompute_window(start_date, end_date, args.source_run_id)
         return
@@ -226,7 +226,7 @@ def main() -> None:
         return
 
     if not args.trading_date:
-        raise SystemExit("Provide --trading-date, or use --start-date/--end-date, or --latest-minute-window.")
+        raise SystemExit("Provide --trading-date, or use --start-date/--end-date, or --latest-backfill-window.")
     recompute(date.fromisoformat(args.trading_date), args.source_run_id)
 
 

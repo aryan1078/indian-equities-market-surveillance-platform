@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from market_surveillance.analytics import compute_daily_indicators
 from market_surveillance.db import get_cassandra_session, get_redis, pg_connection
 from market_surveillance.history import candidate_symbols, ensure_daily_history, sync_metadata_profiles
+from market_surveillance.market_data import preferred_market_data_provider
 from market_surveillance.market_time import as_market_time, ensure_utc
 from market_surveillance.metadata import load_stock_references, valid_peer_sector
 from market_surveillance.settings import get_settings
@@ -1305,18 +1306,26 @@ def _latest_run(mode: str | None = None) -> dict[str, Any] | None:
 
 def _system_scale_projection(
     listed_symbols: int,
-    hydrated_trading_days: int,
-    actual_materialized_rows: int,
+    intraday_symbols_loaded: int,
+    intraday_trading_days_loaded: int,
+    actual_intraday_tick_and_anomaly_rows: int,
 ) -> dict[str, Any]:
-    minute_rows_per_trading_day = listed_symbols * SESSION_MINUTES_PER_DAY
-    minute_rows_for_loaded_window = minute_rows_per_trading_day * max(hydrated_trading_days, 0)
+    active_symbols = max(intraday_symbols_loaded, 0)
+    active_sessions = max(intraday_trading_days_loaded, 0)
+    minute_rows_per_trading_day = active_symbols * SESSION_MINUTES_PER_DAY
+    minute_rows_for_loaded_window = minute_rows_per_trading_day * active_sessions
     minute_rows_per_year = minute_rows_per_trading_day * TRADING_DAYS_PER_YEAR
     tick_and_anomaly_rows_for_loaded_window = minute_rows_for_loaded_window * 2
     tick_and_anomaly_rows_per_year = minute_rows_per_year * 2
     five_year_tick_and_anomaly_rows = tick_and_anomaly_rows_per_year * 5
-    actual_vs_loaded_window_pct = (
-        round((actual_materialized_rows / tick_and_anomaly_rows_for_loaded_window) * 100, 4)
+    actual_capture_pct = (
+        round((actual_intraday_tick_and_anomaly_rows / tick_and_anomaly_rows_for_loaded_window) * 100, 4)
         if tick_and_anomaly_rows_for_loaded_window
+        else 0.0
+    )
+    current_scope_share_of_listed_universe_pct = (
+        round((active_symbols / listed_symbols) * 100, 2)
+        if listed_symbols
         else 0.0
     )
 
@@ -1324,7 +1333,8 @@ def _system_scale_projection(
         "session_minutes": SESSION_MINUTES_PER_DAY,
         "trading_days_per_year": TRADING_DAYS_PER_YEAR,
         "listed_symbols": listed_symbols,
-        "hydrated_trading_days": hydrated_trading_days,
+        "intraday_symbols_loaded": active_symbols,
+        "intraday_trading_days_loaded": active_sessions,
         "minute_rows_per_trading_day": minute_rows_per_trading_day,
         "minute_rows_for_loaded_window": minute_rows_for_loaded_window,
         "minute_rows_per_year": minute_rows_per_year,
@@ -1333,7 +1343,8 @@ def _system_scale_projection(
         "five_year_tick_and_anomaly_rows": five_year_tick_and_anomaly_rows,
         "crosses_crore_in_loaded_window": tick_and_anomaly_rows_for_loaded_window >= 10_000_000,
         "crosses_crore_annually": tick_and_anomaly_rows_per_year >= 10_000_000,
-        "actual_materialized_vs_loaded_window_pct": actual_vs_loaded_window_pct,
+        "actual_capture_vs_loaded_window_pct": actual_capture_pct,
+        "current_scope_share_of_listed_universe_pct": current_scope_share_of_listed_universe_pct,
     }
 
 
@@ -1371,6 +1382,15 @@ def _system_scale_snapshot(
                    MIN(trading_date) AS first_daily_date,
                    MAX(trading_date) AS last_daily_date
             FROM operational.stock_daily_bars
+            """
+        ).fetchone()
+        intraday_window = conn.execute(
+            """
+            SELECT COUNT(DISTINCT trading_date) AS trading_days_loaded,
+                   COUNT(DISTINCT symbol) AS intraday_symbols_loaded,
+                   MIN(trading_date) AS first_intraday_date,
+                   MAX(trading_date) AS last_intraday_date
+            FROM operational.surveillance_coverage
             """
         ).fetchone()
         active_ingestion_runs = [
@@ -1443,7 +1463,12 @@ def _system_scale_snapshot(
         if key not in {"redis_keys", "inflight_market_ticks", "inflight_anomaly_metrics"} and value is not None
     )
     materialized_total_rows = operational_total_rows + warehouse_total_rows + streaming_total_rows
-    trading_days_loaded = int(coverage_window["trading_days_loaded"] or 0)
+    daily_trading_days_loaded = int(coverage_window["trading_days_loaded"] or 0)
+    intraday_trading_days_loaded = int(intraday_window["trading_days_loaded"] or 0)
+    intraday_symbols_loaded = int(intraday_window["intraday_symbols_loaded"] or 0)
+    actual_intraday_tick_and_anomaly_rows = int(streaming_counts["market_ticks"] or 0) + int(
+        streaming_counts["anomaly_metrics"] or 0
+    )
 
     return {
         "actual": {
@@ -1461,12 +1486,18 @@ def _system_scale_snapshot(
             "hydrated_symbols": len(history_map),
             "first_daily_date": str(coverage_window["first_daily_date"]) if coverage_window["first_daily_date"] else None,
             "last_daily_date": str(coverage_window["last_daily_date"]) if coverage_window["last_daily_date"] else None,
-            "trading_days_loaded": trading_days_loaded,
+            "daily_trading_days_loaded": daily_trading_days_loaded,
+            "intraday_symbols_loaded": intraday_symbols_loaded,
+            "intraday_trading_days_loaded": intraday_trading_days_loaded,
+            "first_intraday_date": str(intraday_window["first_intraday_date"]) if intraday_window["first_intraday_date"] else None,
+            "last_intraday_date": str(intraday_window["last_intraday_date"]) if intraday_window["last_intraday_date"] else None,
+            "trading_days_loaded": daily_trading_days_loaded,
         },
         "projection": _system_scale_projection(
             listed_symbols=len(profiles),
-            hydrated_trading_days=trading_days_loaded,
-            actual_materialized_rows=materialized_total_rows,
+            intraday_symbols_loaded=intraday_symbols_loaded,
+            intraday_trading_days_loaded=intraday_trading_days_loaded,
+            actual_intraday_tick_and_anomaly_rows=actual_intraday_tick_and_anomaly_rows,
         ),
     }
 
@@ -1932,6 +1963,12 @@ def system_health() -> dict[str, Any]:
             "webhook_type": settings.alert_webhook_type,
             "min_severity": settings.alert_notify_min_severity,
         },
+        "data_policy": {
+            "strict_real_data_only": settings.strict_real_data_only,
+            "market_data_provider": preferred_market_data_provider(),
+            "configured_provider": settings.market_data_provider,
+            "upstox_configured": bool(settings.upstox_access_token),
+        },
     }
 
 
@@ -1952,7 +1989,9 @@ def methodology() -> dict[str, Any]:
             "session_open": settings.market_open_ist,
             "session_close": settings.market_close_ist,
             "session_minutes": SESSION_MINUTES_PER_DAY,
-            "scope": "Indian equities, IST market calendar, minute bars as the operational grain.",
+            "scope": "Indian equities, IST market calendar, and real bars at the best available interval for each horizon.",
+            "provider_policy": preferred_market_data_provider(),
+            "strict_real_only": settings.strict_real_data_only,
         },
         "anomaly": {
             "warmup_minutes": settings.anomaly_warmup_minutes,
@@ -1962,15 +2001,15 @@ def methodology() -> dict[str, Any]:
             "composite_threshold": settings.anomaly_composite_threshold,
             "composite_weights": {"price_z": 0.6, "volume_z": 0.4},
             "threshold_rationale": (
-                "The current thresholds are tuned to surface enough activity for replay and classroom demos. "
-                "They are intentionally more sensitive than a hardened production calibration, which would be "
-                "tightened using backtesting by sector, liquidity bucket, and false-positive cost."
+                "The thresholds are currently set to keep real captured sessions interpretable while still surfacing "
+                "enough activity for analyst review. A production rollout would tighten them with backtesting by "
+                "sector, liquidity bucket, and false-positive cost."
             ),
             "formulas": [
                 {
                     "name": "Return percentage",
                     "formula": "((close_t - close_(t-1)) / close_(t-1)) * 100",
-                    "meaning": "One-minute price move expressed as a percentage.",
+                    "meaning": "The latest bar-to-bar price move, expressed as a percentage for whichever real interval is being monitored.",
                 },
                 {
                     "name": "EWMA alpha",
@@ -2046,15 +2085,15 @@ def methodology() -> dict[str, Any]:
         },
         "warehouse": {
             "facts": [
-                "fact_anomaly_minute for minute-grain surveillance metrics",
-                "fact_market_day for daily stock summaries",
+                "fact_anomaly_minute for real intraday surveillance bars",
+                "fact_market_day for stock-level daily summaries",
                 "fact_contagion_event for persisted propagation windows",
                 "fact_surveillance_coverage as a factless monitoring ledger",
             ],
             "why": (
-                "Warehouse facts are separated by grain so OLAP questions stay defensible. Minute analytics, daily "
-                "summaries, contagion windows, and monitoring coverage are modeled separately instead of being mixed "
-                "into one ambiguous fact table."
+                "Warehouse facts are separated by grain so OLAP questions stay defensible. Intraday anomaly bars, "
+                "daily summaries, contagion windows, and monitoring coverage are modeled separately instead of being "
+                "mixed into one ambiguous fact table."
             ),
         },
     }
