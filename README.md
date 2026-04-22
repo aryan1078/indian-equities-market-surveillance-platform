@@ -1,52 +1,258 @@
 # Indian Equities Market Surveillance Platform
 
-Distributed market surveillance and cross-asset contagion detection system for Indian equities, built around Kafka, Cassandra, Redis, PostgreSQL, FastAPI, and Next.js.
+Distributed market surveillance, anomaly detection, contagion analysis, and warehouse analytics for Indian equities. The platform is built as a replay-first, presentation-ready stack around Kafka, Cassandra, Redis, PostgreSQL, FastAPI, and Next.js.
+
+## What This System Does
+
+- Ingests minute bars for Indian equities from `yfinance`, replay fixtures, or live polling.
+- Streams normalized intraday records through Kafka so multiple services can process the same market feed deterministically.
+- Persists append-heavy operational facts in Cassandra and hot operator state in Redis.
+- Detects price and volume anomalies in near real time using EWMA-based scoring.
+- Detects sector contagion windows and stores those operational events in PostgreSQL.
+- Loads a PostgreSQL star-schema warehouse for historical analysis, rollups, persistence studies, and analyst-friendly querying.
+- Serves a polished operator console and warehouse analyst workbench through a single web application.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A["yfinance backfill / live collector / replay fixture"] --> B["Kafka: market_ticks"]
+    B --> C["Storage consumer"]
+    B --> D["Anomaly engine"]
+    C --> E["Cassandra: market_ticks + latest_market_state"]
+    D --> F["Redis: engine state + live read models"]
+    D --> G["Cassandra: anomaly_metrics"]
+    D --> H["Kafka: anomaly_detections"]
+    H --> I["Contagion engine"]
+    I --> J["PostgreSQL operational schema"]
+    E --> K["ETL"]
+    G --> K
+    J --> K
+    K --> L["PostgreSQL warehouse schema"]
+    J --> M["FastAPI"]
+    L --> M
+    F --> M
+    M --> N["Next.js operator console"]
+```
+
+## Major Product Surfaces
+
+- `Overview`: live tape, current alerts, active sector pressure, top movers, and recent contagion events.
+- `Stocks`: full NSE directory, hydration tracking, stock search, screener views, and per-symbol workspaces.
+- `Contagion`: sector propagation monitoring and recent contagion event investigation.
+- `Warehouse`: analytical rollups, regime summaries, persistence analytics, intraday pressure profiles, and advanced warehouse insights.
+- `Warehouse Analyst`: visual query builder over curated warehouse datasets with charts, CSV export, and print-to-PDF reporting.
+- `Process`: step-by-step explanation of the entire pipeline from ingestion to warehouse analytics.
+- `Methodology`: formulas, thresholds, signal semantics, and alert logic explained in product terms.
+- `Replay`: deterministic demo controls for running the platform outside market hours.
+- `System`: health, scale, run history, storage footprint, and operational readiness.
+
+## Data Stores And Their Roles
+
+- `Kafka`: replayable transport for ticks and anomaly detections.
+- `Cassandra`: operational minute-grain storage for market ticks and anomaly metrics.
+- `Redis`: anomaly engine restart state, latest market views, latest anomaly views, and freshness markers.
+- `PostgreSQL operational schema`: ingestion runs, ETL runs, alerts, and contagion events.
+- `PostgreSQL warehouse schema`: stock, sector, date, time, and exchange dimensions plus fact tables and materialized views for analytics.
 
 ## Monorepo Layout
 
-- `infra/`: Docker, Cassandra, PostgreSQL, and Redis configuration.
-- `services/collector`: `yfinance` backfill and replay producer.
-- `services/storage-consumer`: Kafka-to-Cassandra persistence service.
-- `services/anomaly-engine`: Redis-backed streaming anomaly detection.
-- `services/contagion-engine`: sector-aware contagion event detection.
-- `services/api`: FastAPI service for live and warehouse reads.
-- `services/etl`: Cassandra-to-PostgreSQL warehouse ETL.
-- `shared/contracts`: shared Python models, settings, and utilities.
-- `shared/metadata`: stock universe and sector mappings.
-- `frontend`: Next.js operator dashboard.
-- `tests`: fixtures and unit tests.
-- `docs`: architecture and viva-facing documentation.
+- `infra/`: Dockerfiles, Cassandra schema, PostgreSQL init and runtime migrations, and Redis config.
+- `services/collector`: backfill, replay, and live polling collectors.
+- `services/storage-consumer`: Kafka-to-Cassandra storage path.
+- `services/anomaly-engine`: streaming anomaly detection and Redis state management.
+- `services/contagion-engine`: sector-aware contagion detection and recompute tooling.
+- `services/api`: FastAPI surface for operational and analytical reads.
+- `services/etl`: warehouse ETL and staging logic.
+- `shared/contracts`: shared Python models, utilities, analytics, and settings.
+- `shared/scripts`: bootstrap, NSE universe sync, local launch, public tunnel launch, and smoke tests.
+- `frontend`: Next.js operator console and analyst UI.
+- `tests`: unit and integration-facing fixtures.
+- `docs`: architecture notes and viva-facing support material.
 
 ## Quick Start
 
+### Prerequisites
+
+- Docker Desktop
+- PowerShell
+- Python 3.11+
+
+### Local Setup
+
 1. Copy `.env.example` to `.env`.
-2. Run `powershell -ExecutionPolicy Bypass -File .\\shared\\scripts\\bootstrap.ps1`.
-3. Install Python dependencies with `python -m venv .venv` and `.\\.venv\\Scripts\\pip install -r requirements.txt`.
-4. Start the stack with `docker compose up --build`.
-5. Open the API at `http://localhost:8000/docs` and the frontend at `http://localhost:3000`.
+2. Ensure runtime folders exist:
 
-## Public Access
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\shared\scripts\bootstrap.ps1
+   ```
 
-- The frontend is configured to proxy browser `/api/*` requests through Next.js, so one public URL can front both the UI and API.
-- For local Docker runs, the frontend proxies to `http://api:8000`.
-- For non-Docker local runs, set `API_PROXY_TARGET=http://localhost:8000` and leave `NEXT_PUBLIC_API_BASE_URL` empty so browser requests stay same-origin.
+3. Create the local virtual environment and install Python dependencies:
 
-## Service Commands
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\pip install -r requirements.txt
+   ```
 
-- Collector backfill:
-  - `python -m collector.main backfill --symbols RELIANCE.BO HDFCBANK.NS`
-- Collector replay:
-  - `python -m collector.main replay --fixture tests/fixtures/replay_ticks.jsonl --speed 30`
-- Warehouse ETL:
-  - `python -m etl_service.main run --trading-date 2026-03-16`
+4. Start the local stack:
 
-## Design Notes
+   ```powershell
+   docker compose up -d
+   ```
 
-- UTC is the system of record for timestamps, with IST trading date retained for business logic.
-- Cassandra stores append-only operational facts.
-- Redis stores stream state and hot dashboard views.
-- PostgreSQL stores contagion events, ETL metadata, and analytical warehouse facts.
-- Replay mode is a first-class workflow so the demo works outside market hours.
+5. Open:
+
+- Frontend: `http://localhost:3000`
+- API docs: `http://localhost:8000/docs`
+
+## One-Click Local Launch And Public Tunnel
+
+For daily use on Windows, the repo now includes double-click launchers:
+
+- `Launch Market Surveillance.cmd`
+- `Stop Market Surveillance.cmd`
+
+### What The Launcher Does
+
+- bootstraps runtime folders
+- starts the full local Docker stack
+- waits for the API and frontend to become available
+- opens a public tunnel to the local frontend
+- writes the tunnel URL to `tmp/public-url.txt`
+- writes a launch summary to `tmp/launch-summary.json`
+
+### Manual Script Usage
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\shared\scripts\start_stack_and_tunnel.ps1
+```
+
+Useful switches:
+
+- `-Rebuild`: rebuild services before launching
+- `-NoTunnel`: start locally without opening a public URL
+- `-NoBrowser`: do not auto-open the browser
+- `-LiveCollector`: also start the live collector profile
+- `-TunnelProvider localhostrun|cloudflare|auto`: choose the public tunnel method
+
+By default the launcher uses `auto`, which prefers `localhost.run` and falls back to Cloudflare quick tunnels if needed.
+
+### Start On Windows Sign-In
+
+To place the launcher in the Windows Startup folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\shared\scripts\install_startup_shortcut.ps1
+```
+
+To remove that startup shortcut later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\shared\scripts\install_startup_shortcut.ps1 -Remove
+```
+
+## Data Collection Modes
+
+### Replay
+
+Deterministic replay is the default demo mode. It is designed to work when the market is closed while still exercising Kafka, Cassandra, Redis, contagion detection, ETL, and the warehouse layer.
+
+```powershell
+docker compose --profile tooling run --rm collector python -m collector.main replay --fixture tests/fixtures/replay_ticks.jsonl --speed 30
+```
+
+### Live Market Polling
+
+```powershell
+docker compose --profile live up -d collector-live
+```
+
+### Backfill
+
+```powershell
+docker compose --profile tooling run --rm collector python -m collector.main backfill --symbols RELIANCE.NS TCS.NS INFY.NS
+```
+
+## Warehouse And Analyst Features
+
+The warehouse is not just a reporting dump. It is designed as an analyst-facing consolidation layer.
+
+Current analytical capabilities include:
+
+- minute-grain anomaly facts
+- stock-day anomaly and contagion rollups
+- sector-day and sector-month summaries
+- sector regime analysis
+- stock persistence and recurrence analytics
+- intraday pressure profiling
+- contagion event warehousing
+- interactive analyst query builder
+- CSV export and browser-native PDF report generation
+
+The analyst workbench is available at:
+
+- `http://localhost:3000/warehouse/analyst`
+
+## Testing And Validation
+
+### Backend Unit Tests
+
+```powershell
+docker compose exec api python -m pytest -q
+```
+
+### Frontend Production Build
+
+```powershell
+docker compose exec frontend npm run build
+```
+
+### Full Website Smoke Test
+
+The repo includes a reusable smoke-test harness that checks major pages and core API flows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\shared\scripts\smoke_test_site.ps1
+```
+
+The smoke test covers:
+
+- main UI routes
+- stock directory and stock workspace
+- contagion and warehouse APIs
+- warehouse query metadata and live query execution
+- replay status and system health
+
+## Performance Notes
+
+Recent optimizations in the repo include:
+
+- GZip compression on the FastAPI layer
+- cached warehouse summary and materialized-view endpoints
+- bulk daily-history loading for screener and peer comparison paths
+- homepage data consolidation so the overview route avoids redundant extra requests
+- lighter live tape payloads because company names now ride on the latest market record
+
+## Demo Checklist
+
+For a polished demo, the recommended path is:
+
+1. Start the stack with `Launch Market Surveillance.cmd`
+2. Confirm the public tunnel URL from `tmp/public-url.txt`
+3. Open `Overview` for the live tape and alert queue
+4. Open `Stocks` and search a symbol workspace
+5. Open `Contagion` for sector propagation events
+6. Open `Warehouse` and `Warehouse Analyst`
+7. Open `Process` and `Methodology` for architecture and formula walkthroughs
+8. Use `Replay` if you need a deterministic after-hours demo
+
+## Design Principles
+
+- UTC is the system of record for timestamps; IST trading semantics are preserved for business logic and UI.
+- Cassandra is used only for operational write-heavy access patterns, not warehouse-style OLAP.
+- Contagion events are kept relational because they are dashboard- and join-friendly.
+- Warehouse facts are separated by grain rather than mixed into a single ambiguous table.
+- Replay mode is a first-class capability, not an afterthought.
 
 ## Contributors
 

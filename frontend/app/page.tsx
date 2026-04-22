@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ExplainerCards } from "../components/explainer-cards";
 import { LiveTapePanel } from "../components/live-tape-panel";
 import { StatCard } from "../components/stat-card";
-import { fetchOverview, fetchReferenceStocks, fetchScreener } from "../lib/api";
+import { fetchOverview } from "../lib/api";
 import {
   formatDate,
   formatDateTime,
@@ -28,22 +28,13 @@ function severityClass(value: string | null | undefined) {
 }
 
 export default async function OverviewPage() {
-  const [overview, reference, screener] = await Promise.all([
-    fetchOverview(),
-    fetchReferenceStocks({ watchlistOnly: true, limit: 100 }),
-    fetchScreener(45, 40),
-  ]);
+  const overview = await fetchOverview();
 
   const liveMarket = overview?.live_market ?? [];
   const sectorHeatmap = overview?.sector_heatmap ?? [];
   const contagion = overview?.recent_contagion_events ?? [];
   const alerts = overview?.recent_alerts ?? [];
-  const screenerItems = screener?.items ?? [];
-  const referenceStocks = reference?.stocks ?? [];
-  const referenceMap = new Map(referenceStocks.map((stock) => [stock.symbol, stock]));
-  const movers = [...screenerItems]
-    .sort((left, right) => (right.indicators.return_20d_pct ?? -9999) - (left.indicators.return_20d_pct ?? -9999))
-    .slice(0, 10);
+  const movers = overview?.top_movers ?? [];
   const anomalyAlerts = alerts.filter((alert) => alert.event_category === "anomaly");
   const highlightRows = anomalyAlerts.length ? anomalyAlerts : alerts;
   const sectorSummary = new Map<string, { sector: string; count: number; score: number }>();
@@ -76,7 +67,7 @@ export default async function OverviewPage() {
       eyebrow: "Monitor",
       title: "Stock workspace",
       metric: `${liveFlaggedCount} live flagged`,
-      hint: `${screenerItems.length} hydrated names ready for drill-down`,
+      hint: `${overview?.hydrated_symbol_count ?? 0} hydrated names ready for drill-down`,
     },
     {
       href: "/contagion",
@@ -117,9 +108,9 @@ export default async function OverviewPage() {
         <div className="statsGrid">
           <StatCard
             label="Tracked universe"
-            value={String(overview?.tracked_symbol_count ?? reference?.symbol_count ?? 0)}
+            value={String(overview?.tracked_symbol_count ?? 0)}
             info="All symbols currently present in the monitored reference universe, whether or not they are actively flagged."
-            hint={`${overview?.hydrated_symbol_count ?? reference?.hydrated_count ?? 0} hydrated | ${overview?.watchlist_symbol_count ?? reference?.watchlist_count ?? 0} live watchlist`}
+            hint={`${overview?.hydrated_symbol_count ?? 0} hydrated | ${overview?.watchlist_symbol_count ?? 0} live watchlist`}
           />
           <StatCard
             label="Live symbols"
@@ -224,7 +215,7 @@ export default async function OverviewPage() {
             </span>
           </div>
           {liveMarket.length ? (
-            <LiveTapePanel items={liveMarket} referenceStocks={referenceStocks} />
+            <LiveTapePanel items={liveMarket} />
           ) : (
             <div className="emptyState">No live snapshot is active. Historical analytics remain available.</div>
           )}

@@ -82,6 +82,7 @@ export type ReferenceStocksResponse = {
 
 export type LatestMarket = {
   symbol: string;
+  company_name?: string | null;
   sector: string;
   exchange: string;
   trading_date?: string;
@@ -133,6 +134,7 @@ export type OverviewResponse = {
   market_mode?: string | null;
   live_market: LatestMarket[];
   top_anomalies: LatestAnomaly[];
+  top_movers?: ScreenerItem[];
   sector_heatmap: Array<{
     sector: string;
     avg_composite_score: number;

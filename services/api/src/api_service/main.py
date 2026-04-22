@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 from market_surveillance.analytics import compute_daily_indicators
@@ -893,6 +894,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 
 def redis_json_values(pattern: str) -> list[dict[str, Any]]:
@@ -1073,6 +1075,7 @@ def _load_latest_market_map() -> dict[str, dict[str, Any]]:
         timestamp_ist = as_market_time(timestamp_utc)
         records[row["symbol"]] = {
             "symbol": row["symbol"],
+            "company_name": profile.get("company_name", row["symbol"]),
             "sector": profile.get("sector", "Unknown"),
             "exchange": profile.get("exchange", "Unknown"),
             "trading_date": str(row["trading_date"]),
@@ -1488,6 +1491,48 @@ def _daily_rows(symbol: str, days: int) -> list[dict[str, Any]]:
     return _cached(cache_key, 120.0, _loader)
 
 
+def _bulk_daily_rows(symbols: list[str], days: int) -> dict[str, list[dict[str, Any]]]:
+    normalized = [symbol for symbol in dict.fromkeys(symbols) if symbol]
+    if not normalized:
+        return {}
+
+    cache_key = f"history:daily-bulk:{max(days, 1)}:{json.dumps(normalized)}"
+
+    def _loader() -> dict[str, list[dict[str, Any]]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                WITH ranked AS (
+                    SELECT
+                        symbol,
+                        trading_date,
+                        open,
+                        high,
+                        low,
+                        close,
+                        adj_close,
+                        volume,
+                        dividends,
+                        stock_splits,
+                        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trading_date DESC) AS row_rank
+                    FROM operational.stock_daily_bars
+                    WHERE symbol = ANY(%s)
+                )
+                SELECT symbol, trading_date, open, high, low, close, adj_close, volume, dividends, stock_splits
+                FROM ranked
+                WHERE row_rank <= %s
+                ORDER BY symbol, trading_date ASC
+                """,
+                (normalized, max(days, 1)),
+            ).fetchall()
+        payload: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            payload[row["symbol"]].append(dict(row))
+        return dict(payload)
+
+    return _cached(cache_key, 120.0, _loader)
+
+
 def _window_return(rows: list[dict[str, Any]], sessions: int) -> float | None:
     if len(rows) <= sessions:
         return None
@@ -1496,6 +1541,15 @@ def _window_return(rows: list[dict[str, Any]], sessions: int) -> float | None:
     if anchor_close in (None, 0):
         return None
     return float(((latest_close / anchor_close) - 1) * 100)
+
+
+def _descending_numeric_key(value: Any) -> float:
+    if value is None:
+        return math.inf
+    try:
+        return -float(value)
+    except (TypeError, ValueError):
+        return math.inf
 
 
 def _history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1607,10 +1661,11 @@ def _peer_comparison(symbol: str, sector: str | None, days: int, limit: int = 6)
         )
     )
     profiles = profiles[: max(limit * 4, 24)]
+    daily_row_map = _bulk_daily_rows([profile["symbol"] for profile in profiles], days)
 
     peers: list[dict[str, Any]] = []
     for profile in profiles:
-        daily_rows = _daily_rows(profile["symbol"], days)
+        daily_rows = daily_row_map.get(profile["symbol"], [])
         indicators = compute_daily_indicators(daily_rows)
         latest_alert = open_alerts.get(profile["symbol"])
         latest_anomaly = latest_anomalies.get(profile["symbol"])
@@ -1635,8 +1690,8 @@ def _peer_comparison(symbol: str, sector: str | None, days: int, limit: int = 6)
         key=lambda item: (
             severity_rank.get(str(item.get("latest_alert_severity", "")).lower(), 99),
             -1 if item.get("is_anomalous") else 0,
-            -float(item.get("latest_anomaly_score") or -9999),
-            -float(item.get("return_20d_pct") or -9999),
+            _descending_numeric_key(item.get("latest_anomaly_score")),
+            _descending_numeric_key(item.get("return_20d_pct")),
             item["symbol"],
         )
     )
@@ -1724,6 +1779,83 @@ def _screener_row(profile: dict[str, Any], daily_rows: list[dict[str, Any]], lat
         "latest_anomaly": latest_anomaly,
         "latest_alert": latest_alert,
     }
+
+
+def _sort_screener_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    rows.sort(
+        key=lambda item: (
+            severity_rank.get((item["latest_alert"] or {}).get("severity", "zzz"), 99),
+            -1 if (item["latest_anomaly"] or {}).get("is_anomalous") else 0,
+            _descending_numeric_key(item["indicators"].get("return_20d_pct")),
+            item["symbol"],
+        )
+    )
+    return rows
+
+
+def _top_movers(rows: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda item: (
+            float(item["indicators"].get("return_20d_pct") or -9999),
+            float(item["indicators"].get("volume_ratio_20d") or -9999),
+            item["symbol"],
+        ),
+        reverse=True,
+    )[:limit]
+
+
+def _build_screener(days: int, limit: int, only_hydrated: bool) -> dict[str, Any]:
+    cache_key = f"screener:{max(days, 1)}:{max(limit, 1)}:{int(only_hydrated)}"
+
+    def _loader() -> dict[str, Any]:
+        all_profiles = sorted(_profiles().values(), key=lambda item: item["symbol"])
+        history_map = _history_coverage_map()
+        latest_market = _latest_market_map()
+        latest_anomalies = _latest_anomaly_map()
+        alert_rows = _recent_alerts(limit=500, status="open", scope="current")
+        latest_alerts: dict[str, dict[str, Any]] = {}
+        for alert in alert_rows:
+            latest_alerts.setdefault(alert["symbol"], alert)
+
+        if only_hydrated:
+            eligible_symbols = set(history_map)
+            eligible_symbols.update(latest_market)
+            eligible_symbols.update(latest_anomalies)
+            eligible_symbols.update(latest_alerts)
+            profiles = [profile for profile in all_profiles if profile["symbol"] in eligible_symbols]
+            if not profiles:
+                profiles = [profile for profile in all_profiles if profile.get("watchlist")]
+        else:
+            profiles = all_profiles
+
+        profiles.sort(
+            key=lambda profile: (
+                0 if profile["symbol"] in latest_alerts else 1,
+                0 if profile["symbol"] in latest_anomalies else 1,
+                0 if profile["symbol"] in latest_market else 1,
+                0 if profile.get("watchlist") else 1,
+                profile["symbol"],
+            )
+        )
+        profile_budget = min(len(profiles), max(limit * 2, 100 if only_hydrated else 150))
+        profiles = profiles[:profile_budget]
+        daily_row_map = _bulk_daily_rows([profile["symbol"] for profile in profiles], days)
+
+        rows = [
+            _screener_row(
+                profile,
+                daily_row_map.get(profile["symbol"], []),
+                latest_market.get(profile["symbol"]),
+                latest_anomalies.get(profile["symbol"]),
+                latest_alerts.get(profile["symbol"]),
+            )
+            for profile in profiles
+        ]
+        return {"items": _sort_screener_rows(rows)[:limit], "count": len(rows)}
+
+    return _cached(cache_key, 30.0, _loader)
 
 
 @app.get("/api/system/health")
@@ -1904,56 +2036,61 @@ def methodology() -> dict[str, Any]:
 
 @app.get("/api/overview")
 def overview() -> dict[str, Any]:
-    profiles = _profiles()
-    history_map = _history_coverage_map()
-    alert_scope = _alert_scope_snapshot()
-    latest_market = sorted(_latest_market_map().values(), key=lambda item: (item["sector"], item["symbol"]))
-    latest_anomalies = [item for item in _latest_anomaly_map().values() if item.get("is_anomalous")]
-    sector_scores: dict[str, list[float]] = defaultdict(list)
-    for anomaly in latest_anomalies:
-        sector_scores[anomaly["sector"]].append(anomaly["composite_score"])
-    sector_heatmap = [
-        {
-            "sector": sector,
-            "avg_composite_score": round(sum(scores) / len(scores), 4),
-            "active_anomalies": len(scores),
+    def _loader() -> dict[str, Any]:
+        profiles = _profiles()
+        history_map = _history_coverage_map()
+        alert_scope = _alert_scope_snapshot()
+        latest_market = sorted(_latest_market_map().values(), key=lambda item: (item["sector"], item["symbol"]))
+        latest_anomalies = [item for item in _latest_anomaly_map().values() if item.get("is_anomalous")]
+        sector_scores: dict[str, list[float]] = defaultdict(list)
+        for anomaly in latest_anomalies:
+            sector_scores[anomaly["sector"]].append(anomaly["composite_score"])
+        sector_heatmap = [
+            {
+                "sector": sector,
+                "avg_composite_score": round(sum(scores) / len(scores), 4),
+                "active_anomalies": len(scores),
+            }
+            for sector, scores in sorted(sector_scores.items())
+        ]
+        alerts = _recent_alerts(limit=8, status="open", scope="current")
+        screener = _build_screener(days=45, limit=40, only_hydrated=True)
+        with pg_connection() as conn:
+            contagion = conn.execute(
+                """
+                SELECT event_id, trigger_symbol, trigger_sector, affected_count, risk_score, event_timestamp
+                FROM operational.contagion_events
+                ORDER BY event_timestamp DESC
+                LIMIT 8
+                """
+            ).fetchall()
+        latest_run = _latest_run()
+        as_of = None
+        if latest_market:
+            as_of = max(item["timestamp_ist"] for item in latest_market if item.get("timestamp_ist"))
+        return {
+            "as_of": as_of,
+            "market_mode": latest_run["mode"] if latest_run else None,
+            "live_market": latest_market,
+            "top_anomalies": sorted(latest_anomalies, key=lambda item: item["composite_score"], reverse=True)[:10],
+            "top_movers": _top_movers(screener["items"], limit=10),
+            "sector_heatmap": sector_heatmap,
+            "recent_contagion_events": [dict(row) for row in contagion],
+            "recent_alerts": alerts,
+            "open_alert_count": alert_scope["current_open_count"],
+            "total_open_alert_count": alert_scope["total_open_count"],
+            "stale_open_alert_count": alert_scope["stale_open_count"],
+            "current_alert_trading_date": str(alert_scope["current_trading_date"]) if alert_scope["current_trading_date"] else None,
+            "latest_stale_alert_date": str(alert_scope["latest_stale_alert_date"]) if alert_scope["latest_stale_alert_date"] else None,
+            "tracked_symbol_count": len(profiles),
+            "tracked_sector_count": len({item["sector"] for item in profiles.values() if item.get("sector")}),
+            "hydrated_symbol_count": len(history_map),
+            "watchlist_symbol_count": len([item for item in profiles.values() if item.get("watchlist")]),
+            "live_symbol_count": len(latest_market),
+            "live_sector_count": len({item["sector"] for item in latest_market}),
         }
-        for sector, scores in sorted(sector_scores.items())
-    ]
-    alerts = _recent_alerts(limit=8, status="open", scope="current")
-    with pg_connection() as conn:
-        contagion = conn.execute(
-            """
-            SELECT event_id, trigger_symbol, trigger_sector, affected_count, risk_score, event_timestamp
-            FROM operational.contagion_events
-            ORDER BY event_timestamp DESC
-            LIMIT 8
-            """
-        ).fetchall()
-    latest_run = _latest_run()
-    as_of = None
-    if latest_market:
-        as_of = max(item["timestamp_ist"] for item in latest_market if item.get("timestamp_ist"))
-    return {
-        "as_of": as_of,
-        "market_mode": latest_run["mode"] if latest_run else None,
-        "live_market": latest_market,
-        "top_anomalies": sorted(latest_anomalies, key=lambda item: item["composite_score"], reverse=True)[:10],
-        "sector_heatmap": sector_heatmap,
-        "recent_contagion_events": [dict(row) for row in contagion],
-        "recent_alerts": alerts,
-        "open_alert_count": alert_scope["current_open_count"],
-        "total_open_alert_count": alert_scope["total_open_count"],
-        "stale_open_alert_count": alert_scope["stale_open_count"],
-        "current_alert_trading_date": str(alert_scope["current_trading_date"]) if alert_scope["current_trading_date"] else None,
-        "latest_stale_alert_date": str(alert_scope["latest_stale_alert_date"]) if alert_scope["latest_stale_alert_date"] else None,
-        "tracked_symbol_count": len(profiles),
-        "tracked_sector_count": len({item["sector"] for item in profiles.values() if item.get("sector")}),
-        "hydrated_symbol_count": len(history_map),
-        "watchlist_symbol_count": len([item for item in profiles.values() if item.get("watchlist")]),
-        "live_symbol_count": len(latest_market),
-        "live_sector_count": len({item["sector"] for item in latest_market}),
-    }
+
+    return _cached("overview", 10.0, _loader)
 
 
 @app.get("/api/reference/stocks")
@@ -2108,61 +2245,7 @@ def stock_screener(
     limit: int = Query(100, ge=1, le=500),
     only_hydrated: bool = Query(True),
 ) -> dict[str, Any]:
-    all_profiles = sorted(_profiles().values(), key=lambda item: item["symbol"])
-    history_map = _history_coverage_map()
-    latest_market = _latest_market_map()
-    latest_anomalies = _latest_anomaly_map()
-    alert_rows = _recent_alerts(limit=500, status="open", scope="current")
-    latest_alerts = {}
-    for alert in alert_rows:
-        latest_alerts.setdefault(alert["symbol"], alert)
-
-    if only_hydrated:
-        eligible_symbols = set(history_map)
-        eligible_symbols.update(latest_market)
-        eligible_symbols.update(latest_anomalies)
-        eligible_symbols.update(latest_alerts)
-        profiles = [profile for profile in all_profiles if profile["symbol"] in eligible_symbols]
-        if not profiles:
-            profiles = [profile for profile in all_profiles if profile.get("watchlist")]
-    else:
-        profiles = all_profiles
-
-    profiles.sort(
-        key=lambda profile: (
-            0 if profile["symbol"] in latest_alerts else 1,
-            0 if profile["symbol"] in latest_anomalies else 1,
-            0 if profile["symbol"] in latest_market else 1,
-            0 if profile.get("watchlist") else 1,
-            profile["symbol"],
-        )
-    )
-    profile_budget = min(len(profiles), max(limit * 3, 150))
-    profiles = profiles[:profile_budget]
-
-    rows = []
-    for profile in profiles:
-        daily_rows = _daily_rows(profile["symbol"], days)
-        rows.append(
-            _screener_row(
-                profile,
-                daily_rows,
-                latest_market.get(profile["symbol"]),
-                latest_anomalies.get(profile["symbol"]),
-                latest_alerts.get(profile["symbol"]),
-            )
-        )
-
-    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    rows.sort(
-        key=lambda item: (
-            severity_rank.get((item["latest_alert"] or {}).get("severity", "zzz"), 99),
-            -1 if (item["latest_anomaly"] or {}).get("is_anomalous") else 0,
-            -float(item["indicators"].get("return_20d_pct") or -9999),
-            item["symbol"],
-        )
-    )
-    return {"items": rows[:limit], "count": len(rows)}
+    return _build_screener(days=days, limit=limit, only_hydrated=only_hydrated)
 
 
 @app.get("/api/stocks/{symbol}/workspace")
@@ -2304,226 +2387,250 @@ def sector_rollups() -> list[dict[str, Any]]:
 
 @app.get("/api/warehouse/summary")
 def warehouse_summary() -> dict[str, Any]:
-    with pg_connection() as conn:
-        row = conn.execute(
-            """
-            WITH market_window AS (
+    def _loader() -> dict[str, Any]:
+        with pg_connection() as conn:
+            row = conn.execute(
+                """
+                WITH market_window AS (
+                    SELECT
+                        COUNT(*) AS market_day_rows,
+                        COUNT(DISTINCT s.symbol) AS stocks_covered,
+                        COUNT(DISTINCT f.sector_sk) AS sectors_covered,
+                        COUNT(DISTINCT f.date_sk) AS trading_days_loaded,
+                        COALESCE(SUM(f.anomaly_count), 0) AS total_anomalies,
+                        COALESCE(SUM(f.contagion_event_count), 0) AS total_contagion_events,
+                        COALESCE(MAX(f.max_composite_score), 0) AS peak_daily_composite_score
+                    FROM warehouse.fact_market_day f
+                    JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk
+                ),
+                date_window AS (
+                    SELECT
+                        MIN(d.calendar_date) AS first_calendar_date,
+                        MAX(d.calendar_date) AS last_calendar_date
+                    FROM warehouse.fact_market_day f
+                    JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+                )
                 SELECT
-                    COUNT(*) AS market_day_rows,
-                    COUNT(DISTINCT s.symbol) AS stocks_covered,
-                    COUNT(DISTINCT f.sector_sk) AS sectors_covered,
-                    COUNT(DISTINCT f.date_sk) AS trading_days_loaded,
-                    COALESCE(SUM(f.anomaly_count), 0) AS total_anomalies,
-                    COALESCE(SUM(f.contagion_event_count), 0) AS total_contagion_events,
-                    COALESCE(MAX(f.max_composite_score), 0) AS peak_daily_composite_score
-                FROM warehouse.fact_market_day f
-                JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk
-            ),
-            date_window AS (
-                SELECT
-                    MIN(d.calendar_date) AS first_calendar_date,
-                    MAX(d.calendar_date) AS last_calendar_date
-                FROM warehouse.fact_market_day f
-                JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
-            )
-            SELECT
-                market_window.market_day_rows,
-                market_window.stocks_covered,
-                market_window.sectors_covered,
-                market_window.trading_days_loaded,
-                market_window.total_anomalies,
-                market_window.total_contagion_events,
-                market_window.peak_daily_composite_score,
-                date_window.first_calendar_date,
-                date_window.last_calendar_date,
-                (SELECT COUNT(*) FROM warehouse.fact_anomaly_minute) AS anomaly_minute_rows,
-                (SELECT COUNT(*) FROM warehouse.fact_contagion_event) AS contagion_event_rows,
-                (SELECT COUNT(*) FROM warehouse.fact_surveillance_coverage) AS coverage_rows,
-                (SELECT COUNT(*) FROM warehouse.mv_sector_momentum_summary) AS sector_momentum_rows,
-                (SELECT COUNT(*) FROM warehouse.mv_stock_persistence_summary) AS stock_persistence_rows,
-                (SELECT COUNT(*) FROM warehouse.mv_intraday_pressure_profile) AS intraday_profile_rows
-            FROM market_window
-            CROSS JOIN date_window
-            """
-        ).fetchone()
-    return dict(row) if row else {}
+                    market_window.market_day_rows,
+                    market_window.stocks_covered,
+                    market_window.sectors_covered,
+                    market_window.trading_days_loaded,
+                    market_window.total_anomalies,
+                    market_window.total_contagion_events,
+                    market_window.peak_daily_composite_score,
+                    date_window.first_calendar_date,
+                    date_window.last_calendar_date,
+                    (SELECT COUNT(*) FROM warehouse.fact_anomaly_minute) AS anomaly_minute_rows,
+                    (SELECT COUNT(*) FROM warehouse.fact_contagion_event) AS contagion_event_rows,
+                    (SELECT COUNT(*) FROM warehouse.fact_surveillance_coverage) AS coverage_rows,
+                    (SELECT COUNT(*) FROM warehouse.mv_sector_momentum_summary) AS sector_momentum_rows,
+                    (SELECT COUNT(*) FROM warehouse.mv_stock_persistence_summary) AS stock_persistence_rows,
+                    (SELECT COUNT(*) FROM warehouse.mv_intraday_pressure_profile) AS intraday_profile_rows
+                FROM market_window
+                CROSS JOIN date_window
+                """
+            ).fetchone()
+        return dict(row) if row else {}
+
+    return _cached("warehouse:summary", 30.0, _loader)
 
 
 @app.get("/api/warehouse/monthly-rollups")
 def monthly_rollups() -> list[dict[str, Any]]:
-    with pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT year, quarter, month, sector_name, avg_daily_composite_score, max_daily_composite_score, contagion_event_count
-            FROM warehouse.mv_sector_monthly_summary
-            ORDER BY year DESC, month DESC, avg_daily_composite_score DESC
-            LIMIT 100
-            """
-        ).fetchall()
-    return [dict(row) for row in rows]
+    def _loader() -> list[dict[str, Any]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT year, quarter, month, sector_name, avg_daily_composite_score, max_daily_composite_score, contagion_event_count
+                FROM warehouse.mv_sector_monthly_summary
+                ORDER BY year DESC, month DESC, avg_daily_composite_score DESC
+                LIMIT 100
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    return _cached("warehouse:monthly", 60.0, _loader)
 
 
 @app.get("/api/warehouse/sector-regimes")
 def warehouse_sector_regimes(limit: int = Query(25, ge=1, le=100)) -> list[dict[str, Any]]:
-    with pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                sector_name,
-                sessions_covered,
-                symbols_covered,
-                anomaly_minutes,
-                total_anomalies,
-                contagion_minutes,
-                contagion_event_count,
-                avg_daily_composite_score,
-                peak_daily_composite_score,
-                latest_calendar_date
-            FROM warehouse.mv_sector_regime_summary
-            ORDER BY peak_daily_composite_score DESC, total_anomalies DESC, sector_name
-            LIMIT %s
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    def _loader() -> list[dict[str, Any]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    sector_name,
+                    sessions_covered,
+                    symbols_covered,
+                    anomaly_minutes,
+                    total_anomalies,
+                    contagion_minutes,
+                    contagion_event_count,
+                    avg_daily_composite_score,
+                    peak_daily_composite_score,
+                    latest_calendar_date
+                FROM warehouse.mv_sector_regime_summary
+                ORDER BY peak_daily_composite_score DESC, total_anomalies DESC, sector_name
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    return _cached(f"warehouse:sector-regimes:{limit}", 30.0, _loader)
 
 
 @app.get("/api/warehouse/stock-outliers")
 def warehouse_stock_outliers(limit: int = Query(50, ge=1, le=200)) -> list[dict[str, Any]]:
-    with pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                d.calendar_date,
-                s.symbol,
-                s.company_name,
-                sec.sector_name,
-                f.anomaly_count,
-                f.max_composite_score,
-                f.avg_composite_score,
-                f.avg_volume_z_score,
-                f.contagion_event_count
-            FROM warehouse.fact_market_day f
-            JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk
-            JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
-            JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
-            ORDER BY d.calendar_date DESC, f.max_composite_score DESC, f.anomaly_count DESC, s.symbol
-            LIMIT %s
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    def _loader() -> list[dict[str, Any]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    d.calendar_date,
+                    s.symbol,
+                    s.company_name,
+                    sec.sector_name,
+                    f.anomaly_count,
+                    f.max_composite_score,
+                    f.avg_composite_score,
+                    f.avg_volume_z_score,
+                    f.contagion_event_count
+                FROM warehouse.fact_market_day f
+                JOIN warehouse.dim_stock s ON s.stock_sk = f.stock_sk
+                JOIN warehouse.dim_date d ON d.date_sk = f.date_sk
+                JOIN warehouse.dim_sector sec ON sec.sector_sk = f.sector_sk
+                ORDER BY d.calendar_date DESC, f.max_composite_score DESC, f.anomaly_count DESC, s.symbol
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    return _cached(f"warehouse:stock-outliers:{limit}", 30.0, _loader)
 
 
 @app.get("/api/warehouse/stock-leaders")
 def warehouse_stock_leaders(limit: int = Query(50, ge=1, le=200)) -> list[dict[str, Any]]:
-    with pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                symbol,
-                company_name,
-                sector_name,
-                sessions_covered,
-                anomaly_days,
-                total_anomalies,
-                avg_daily_composite_score,
-                peak_daily_composite_score,
-                contagion_event_count,
-                latest_calendar_date,
-                latest_anomaly_count,
-                latest_peak_score
-            FROM warehouse.mv_stock_signal_leaders
-            ORDER BY peak_daily_composite_score DESC, total_anomalies DESC, symbol
-            LIMIT %s
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    def _loader() -> list[dict[str, Any]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    symbol,
+                    company_name,
+                    sector_name,
+                    sessions_covered,
+                    anomaly_days,
+                    total_anomalies,
+                    avg_daily_composite_score,
+                    peak_daily_composite_score,
+                    contagion_event_count,
+                    latest_calendar_date,
+                    latest_anomaly_count,
+                    latest_peak_score
+                FROM warehouse.mv_stock_signal_leaders
+                ORDER BY peak_daily_composite_score DESC, total_anomalies DESC, symbol
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    return _cached(f"warehouse:stock-leaders:{limit}", 30.0, _loader)
 
 
 @app.get("/api/warehouse/sector-momentum")
 def warehouse_sector_momentum(limit: int = Query(25, ge=1, le=100)) -> list[dict[str, Any]]:
-    with pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                sector_name,
-                recent_sessions,
-                prior_sessions,
-                recent_total_anomalies,
-                prior_total_anomalies,
-                recent_avg_daily_composite_score,
-                prior_avg_daily_composite_score,
-                recent_peak_daily_composite_score,
-                prior_peak_daily_composite_score,
-                recent_contagion_event_count,
-                prior_contagion_event_count,
-                anomaly_delta,
-                score_delta,
-                contagion_delta
-            FROM warehouse.mv_sector_momentum_summary
-            ORDER BY anomaly_delta DESC, score_delta DESC, sector_name
-            LIMIT %s
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    def _loader() -> list[dict[str, Any]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    sector_name,
+                    recent_sessions,
+                    prior_sessions,
+                    recent_total_anomalies,
+                    prior_total_anomalies,
+                    recent_avg_daily_composite_score,
+                    prior_avg_daily_composite_score,
+                    recent_peak_daily_composite_score,
+                    prior_peak_daily_composite_score,
+                    recent_contagion_event_count,
+                    prior_contagion_event_count,
+                    anomaly_delta,
+                    score_delta,
+                    contagion_delta
+                FROM warehouse.mv_sector_momentum_summary
+                ORDER BY anomaly_delta DESC, score_delta DESC, sector_name
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    return _cached(f"warehouse:sector-momentum:{limit}", 30.0, _loader)
 
 
 @app.get("/api/warehouse/stock-persistence")
 def warehouse_stock_persistence(limit: int = Query(50, ge=1, le=200)) -> list[dict[str, Any]]:
-    with pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                symbol,
-                company_name,
-                sector_name,
-                sessions_covered,
-                anomaly_days,
-                total_anomalies,
-                avg_daily_composite_score,
-                peak_daily_composite_score,
-                contagion_event_count,
-                last_anomaly_date,
-                recent_5_session_anomalies,
-                recent_5_session_anomaly_days,
-                anomaly_day_ratio,
-                avg_anomalies_per_active_day,
-                days_since_last_anomaly
-            FROM warehouse.mv_stock_persistence_summary
-            ORDER BY anomaly_day_ratio DESC, total_anomalies DESC, symbol
-            LIMIT %s
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    def _loader() -> list[dict[str, Any]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    symbol,
+                    company_name,
+                    sector_name,
+                    sessions_covered,
+                    anomaly_days,
+                    total_anomalies,
+                    avg_daily_composite_score,
+                    peak_daily_composite_score,
+                    contagion_event_count,
+                    last_anomaly_date,
+                    recent_5_session_anomalies,
+                    recent_5_session_anomaly_days,
+                    anomaly_day_ratio,
+                    avg_anomalies_per_active_day,
+                    days_since_last_anomaly
+                FROM warehouse.mv_stock_persistence_summary
+                ORDER BY anomaly_day_ratio DESC, total_anomalies DESC, symbol
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    return _cached(f"warehouse:stock-persistence:{limit}", 30.0, _loader)
 
 
 @app.get("/api/warehouse/intraday-profile")
 def warehouse_intraday_profile(limit: int = Query(375, ge=1, le=400)) -> list[dict[str, Any]]:
-    with pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                time_sk,
-                time_label,
-                hour,
-                minute,
-                anomaly_minutes,
-                distinct_stocks,
-                sessions_covered,
-                avg_composite_score,
-                peak_composite_score,
-                contagion_minutes
-            FROM warehouse.mv_intraday_pressure_profile
-            ORDER BY time_sk ASC
-            LIMIT %s
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    def _loader() -> list[dict[str, Any]]:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    time_sk,
+                    time_label,
+                    hour,
+                    minute,
+                    anomaly_minutes,
+                    distinct_stocks,
+                    sessions_covered,
+                    avg_composite_score,
+                    peak_composite_score,
+                    contagion_minutes
+                FROM warehouse.mv_intraday_pressure_profile
+                ORDER BY time_sk ASC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    return _cached(f"warehouse:intraday-profile:{limit}", 30.0, _loader)
 
 
 @app.get("/api/system/runs")

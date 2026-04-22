@@ -4,12 +4,11 @@ import Link from "next/link";
 import { useDeferredValue, useMemo, useState } from "react";
 
 import { InfoHint } from "./info-hint";
-import type { LatestMarket, StockReference } from "../lib/api";
+import type { LatestMarket } from "../lib/api";
 import { formatCompactIndian, formatDate, formatDateTime, formatNumber, formatTime } from "../lib/format";
 
 type LiveTapePanelProps = {
   items: LatestMarket[];
-  referenceStocks: StockReference[];
 };
 
 const DEFAULT_LIMIT = "25";
@@ -26,18 +25,13 @@ function timestampMs(value: string | null | undefined) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
+export function LiveTapePanel({ items }: LiveTapePanelProps) {
   const [query, setQuery] = useState("");
   const [sector, setSector] = useState("all");
   const [status, setStatus] = useState("all");
   const [sort, setSort] = useState("priority");
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
-
-  const referenceMap = useMemo(
-    () => new Map(referenceStocks.map((stock) => [stock.symbol, stock])),
-    [referenceStocks],
-  );
 
   const sectors = useMemo(() => {
     const values = new Set<string>();
@@ -82,7 +76,7 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
 
   const filtered = useMemo(() => {
     const next = items.filter((item) => {
-      const companyName = referenceMap.get(item.symbol)?.company_name ?? "";
+      const companyName = item.company_name ?? "";
       const haystack = [item.symbol, companyName, item.sector, item.exchange].join(" ").toLowerCase();
       if (deferredQuery && !haystack.includes(deferredQuery)) {
         return false;
@@ -118,7 +112,7 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
     });
 
     return next;
-  }, [deferredQuery, items, referenceMap, sector, sort, status]);
+  }, [deferredQuery, items, sector, sort, status]);
 
   const visible = useMemo(() => {
     if (limit === "all") {
@@ -356,7 +350,7 @@ export function LiveTapePanel({ items, referenceStocks }: LiveTapePanelProps) {
                       {item.symbol}
                     </Link>
                   </td>
-                  <td>{referenceMap.get(item.symbol)?.company_name ?? item.symbol}</td>
+                  <td>{item.company_name ?? item.symbol}</td>
                   <td>{item.sector}</td>
                   <td>{formatNumber(item.close)}</td>
                   <td>{formatNumber(item.composite_score, 3)}</td>
