@@ -222,11 +222,11 @@ The easiest way to understand the application is to follow one market bar from s
 
 \begin{figure}[htbp]
 \centering
-\resizebox{0.94\textwidth}{!}{%
+\resizebox{0.98\textwidth}{!}{%
 \begin{tikzpicture}[
-    node distance=0.18cm,
-    font=\footnotesize,
-    step/.style={draw=black!60, rounded corners=3pt, fill=softgray, text width=13.1cm, align=left, inner sep=5pt},
+    node distance=0.2cm,
+    font=\small,
+    step/.style={draw=black!60, rounded corners=3pt, fill=softgray, text width=11.9cm, align=left, inner sep=6pt},
     arrow/.style={-{Latex[length=2.2mm]}, thick}
 ]
 \node[step] (s1) {\textbf{1. Collection and normalization.} The collector downloads bars, converts timestamps to UTC and IST, adds exchange and sector metadata, assigns a deterministic dedupe key, and emits a canonical \texttt{MarketTick}.};
