@@ -164,50 +164,28 @@ The system uses polyglot persistence because the workload demands it. Kafka prov
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    node distance=0.55cm and 0.6cm,
-    font=\small,
-    box/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=3.0cm, minimum height=0.9cm, align=center, inner sep=5pt},
-    widebox/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=5.8cm, minimum height=0.9cm, align=center, inner sep=5pt},
-    store/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=3.1cm, minimum height=0.9cm, align=center, inner sep=5pt},
-    widestore/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=5.8cm, minimum height=0.9cm, align=center, inner sep=5pt},
-    arrow/.style={-{Latex[length=2.5mm]}, thick}
-]
-\node[widebox] (provider) {Real market provider \\ \texttt{yfinance}, provider adapter layer};
-\node[widebox, below=of provider] (collector) {Collector \\ normalization, backfill, replay capture, live polling};
-\node[widebox, below=of collector] (kafka) {Kafka \\ \texttt{market\_ticks}, \texttt{anomaly\_detections}, DLQ};
-
-\node[box, below left=0.95cm and 2.35cm of kafka] (storage) {Storage consumer};
-\node[box, below=0.95cm of kafka] (anomaly) {Anomaly engine};
-\node[box, below right=0.95cm and 2.35cm of kafka] (contagion) {Contagion engine};
-
-\node[store, below=of storage] (cass) {Cassandra \\ ticks, anomaly metrics, latest market state};
-\node[store, below=of anomaly] (redis) {Redis \\ engine state, live cache, freshness keys};
-\node[store, below=of contagion] (pgop) {PostgreSQL operational \\ runs, alerts, profiles, contagion events};
-
-\node[widebox, below=0.95cm of redis] (etl) {ETL \\ staging, cleansing, surrogate keys, fact loading, view refresh};
-\node[widestore, below=of etl] (warehouse) {PostgreSQL warehouse \\ dimensions, facts, materialized views};
-\node[widebox, below=of warehouse] (api) {FastAPI \\ operational APIs and warehouse query APIs};
-\node[widebox, below=of api] (frontend) {Next.js console \\ operator console and analyst workbench};
-
-\draw[arrow] (provider.south) -- (collector.north);
-\draw[arrow] (collector.south) -- (kafka.north);
-\draw[arrow] (kafka.south west) -- (storage.north);
-\draw[arrow] (kafka.south) -- (anomaly.north);
-\draw[arrow] (anomaly.east) -- (contagion.west);
-\draw[arrow] (storage.south) -- (cass.north);
-\draw[arrow] (anomaly.south west) -- (cass.north east);
-\draw[arrow] (anomaly.south) -- (redis.north);
-\draw[arrow] (anomaly.south east) -- (pgop.north west);
-\draw[arrow] (contagion.south) -- (pgop.north);
-\draw[arrow] (cass.south east) -- (etl.north west);
-\draw[arrow] (pgop.south west) -- (etl.north east);
-\draw[arrow] (etl.south) -- (warehouse.north);
-\draw[arrow] (redis.south) |- ([xshift=-1.5cm]api.north);
-\draw[arrow] (pgop.south) |- ([xshift=1.5cm]api.north);
-\draw[arrow] (warehouse.south) -- (api.north);
-\draw[arrow] (api.south) -- (frontend.north);
-\end{tikzpicture}
+\setlength{\fboxsep}{8pt}
+\fbox{%
+\begin{minipage}{0.94\textwidth}
+\small
+\begin{tabularx}{\textwidth}{>{\bfseries}L{0.24\textwidth}Y}
+Real market provider & \texttt{yfinance} through the shared provider adapter. Produces real daily and intraday market bars. \\
+\(\downarrow\) Collector & Normalizes timestamps, attaches metadata, creates canonical ticks, and publishes events. \\
+\(\downarrow\) Kafka & Replayable transport for \texttt{market\_ticks}, \texttt{anomaly\_detections}, and dead-letter messages. \\
+\midrule
+Storage consumer & Consumes \texttt{market\_ticks} and writes raw intraday bars to Cassandra. \\
+Anomaly engine & Consumes \texttt{market\_ticks}, maintains Redis state, writes anomaly metrics, and emits detections. \\
+Contagion engine & Consumes anomaly detections and writes finalized sector-spread events to PostgreSQL. \\
+\midrule
+Cassandra & Operational time-series store for ticks, anomaly metrics, and latest market state. \\
+Redis & Hot state for EWMA recovery, latest snapshots, and freshness markers. \\
+PostgreSQL operational & Relational operational data: runs, alerts, profiles, coverage, and contagion events. \\
+\midrule
+ETL & Extracts operational anomaly data, loads staging, assigns warehouse keys, loads facts, and refreshes views. \\
+PostgreSQL warehouse & Dimensional warehouse with facts, dimensions, and materialized analytical views. \\
+FastAPI and Next.js & Serve operational APIs, warehouse query APIs, the operator console, and the analyst workbench. \\
+\end{tabularx}
+\end{minipage}}
 \caption{High-level system architecture}
 \label{fig:architecture}
 \end{figure}
@@ -219,29 +197,21 @@ The easiest way to understand the application is to follow one market bar from s
 
 \begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[
-    x=1cm,
-    y=1cm,
-    font=\normalsize,
-    step/.style={draw=black!60, rounded corners=3pt, fill=softgray, text width=6.2cm, minimum height=1.55cm, align=left, inner sep=7pt},
-    arrow/.style={-{Latex[length=2.4mm]}, thick}
-]
-\node[step] (s1) at (0,0) {\textbf{1. Collection and normalization.} The collector downloads bars, converts timestamps to UTC and IST, adds exchange and sector metadata, assigns a deterministic dedupe key, and emits a canonical \texttt{MarketTick}.};
-\node[step] (s2) at (7.5,0) {\textbf{2. Kafka publication.} The normalized tick is published to Kafka with the symbol as the message key so that per-symbol ordering is preserved.};
-\node[step] (s3) at (7.5,-2.35) {\textbf{3. Dual consumption.} One consumer persists the raw tick to Cassandra. In parallel, the anomaly engine pulls the same tick and updates streaming statistics.};
-\node[step] (s4) at (0,-2.35) {\textbf{4. Streaming scoring.} After the warm-up period, the anomaly engine computes return percentage, EWMA mean and variance, price \(z\)-score, volume \(z\)-score, rolling volatility, and the composite score.};
-\node[step] (s5) at (0,-4.7) {\textbf{5. Hot-state persistence.} The anomaly engine writes the metric to Cassandra, refreshes Redis live state, records surveillance coverage in PostgreSQL, and emits anomaly detections to Kafka.};
-\node[step] (s6) at (7.5,-4.7) {\textbf{6. Contagion evaluation.} The contagion engine opens a five-minute observation window, tracks anomalous sector peers, and writes one finalized contagion event to PostgreSQL.};
-\node[step] (s7) at (7.5,-7.05) {\textbf{7. End-of-day ETL.} The ETL service extracts anomaly metrics for a trading date, loads staging, derives contagion flags, assigns surrogate keys, loads warehouse facts, and refreshes analytical views.};
-\node[step] (s8) at (0,-7.05) {\textbf{8. User-facing analytics.} FastAPI serves live operational views from Redis/PostgreSQL and historical analysis from the warehouse, while the frontend exposes both operator and analyst workflows.};
-\draw[arrow] (s1.east) -- (s2.west);
-\draw[arrow] (s2.south) -- (s3.north);
-\draw[arrow] (s3.west) -- (s4.east);
-\draw[arrow] (s4.south) -- (s5.north);
-\draw[arrow] (s5.east) -- (s6.west);
-\draw[arrow] (s6.south) -- (s7.north);
-\draw[arrow] (s7.west) -- (s8.east);
-\end{tikzpicture}
+\small
+\begin{tabularx}{\textwidth}{L{0.08\textwidth}L{0.23\textwidth}Y}
+\toprule
+\textbf{Step} & \textbf{Stage} & \textbf{What happens} \\
+\midrule
+1 & Collection and normalization & The collector downloads real market bars, converts timestamps to UTC and IST, attaches exchange and sector metadata, assigns a deterministic dedupe key, and emits a canonical \texttt{MarketTick}. \\
+2 & Kafka publication & The normalized tick is published to Kafka with the symbol as the key, preserving per-symbol ordering for downstream consumers. \\
+3 & Dual consumption & The storage consumer persists the raw tick to Cassandra while the anomaly engine consumes the same event for streaming statistics. \\
+4 & Streaming scoring & After warm-up, the anomaly engine computes return percentage, EWMA mean and variance, price \(z\)-score, volume \(z\)-score, rolling volatility, and composite score. \\
+5 & Hot-state persistence & The metric is written to Cassandra, the Redis state is refreshed, monitoring coverage is recorded in PostgreSQL, and anomaly detections are emitted to Kafka. \\
+6 & Contagion evaluation & The contagion engine opens a five-minute sector window, tracks anomalous peers, and writes one finalized contagion event to PostgreSQL. \\
+7 & End-of-day ETL & The ETL service extracts anomaly metrics for a trading date, loads staging, derives contagion flags, assigns surrogate keys, loads warehouse facts, and refreshes analytical views. \\
+8 & User-facing analytics & FastAPI serves live operational views from Redis/PostgreSQL and historical analysis from the warehouse; the frontend exposes operator and analyst workflows. \\
+\bottomrule
+\end{tabularx}
 \caption{The data journey from ingestion to analytics}
 \label{fig:dataflow}
 \end{figure}
@@ -308,34 +278,27 @@ The warehouse schema is defined in \path{infra/postgres/init.sql} and extended i
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    font=\footnotesize,
-    dim/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=2.2cm, minimum height=0.9cm, align=center, inner sep=4pt},
-    fact/.style={draw=black!70, rounded corners=3pt, fill=softgray, text width=2.45cm, minimum height=1.0cm, align=center, inner sep=4pt},
-    link/.style={draw=black!55, line width=0.5pt}
-]
-\matrix[matrix of nodes,
-        nodes={anchor=center},
-        column sep=0.26cm,
-        row sep=0.34cm] (m) {
-    |[dim]| \shortstack{\textbf{Dimension} \\ \textbf{/ fact}} &
-    |[fact]| \shortstack{\textbf{fact\_anomaly\_minute} \\ minute-grain signal facts} &
-    |[fact]| \shortstack{\textbf{fact\_market\_day} \\ stock-day summary facts} &
-    |[fact]| \shortstack{\textbf{fact\_contagion\_event} \\ event-grain contagion facts} &
-    |[fact]| \shortstack{\textbf{fact\_surveillance\_coverage} \\ factless monitoring coverage} \\
-    |[dim]| \textbf{dim\_stock} & $\bullet$ & $\bullet$ & $\bullet$ & $\bullet$ \\
-    |[dim]| \textbf{dim\_sector} & $\bullet$ & $\bullet$ & $\bullet$ & \\
-    |[dim]| \textbf{dim\_date} & $\bullet$ & $\bullet$ & $\bullet$ & $\bullet$ \\
-    |[dim]| \textbf{dim\_time} & $\bullet$ & & & $\bullet$ \\
-    |[dim]| \textbf{dim\_exchange} & $\bullet$ & $\bullet$ & & \\
-};
-\foreach \col in {2,3,4,5} {
-    \draw[link] (m-1-\col.south) -- (m-6-\col.north);
-}
-\foreach \row in {2,3,4,5,6} {
-    \draw[link] (m-\row-1.east) -- (m-\row-5.west);
-}
-\end{tikzpicture}
+\small
+\begin{tabularx}{\textwidth}{L{0.18\textwidth}>{\centering\arraybackslash}p{0.10\textwidth}>{\centering\arraybackslash}p{0.12\textwidth}>{\centering\arraybackslash}p{0.12\textwidth}>{\centering\arraybackslash}p{0.11\textwidth}Y}
+\toprule
+\textbf{Dimension} &
+\textbf{Minute} &
+\textbf{Market day} &
+\textbf{Contagion} &
+\textbf{Coverage} &
+\textbf{Purpose} \\
+\midrule
+\texttt{dim\_stock} & Yes & Yes & Yes & Yes & Symbol and company identity \\
+\texttt{dim\_sector} & Yes & Yes & Yes & No & Sector roll-ups and peer groups \\
+\texttt{dim\_date} & Yes & Yes & Yes & Yes & Trading-day analysis \\
+\texttt{dim\_time} & Yes & No & No & Yes & Intraday minute analysis \\
+\texttt{dim\_exchange} & Yes & Yes & No & No & Exchange-level attribution \\
+\bottomrule
+\end{tabularx}
+
+\vspace{0.45em}
+\footnotesize
+Fact columns shown above refer to \texttt{fact\_anomaly\_minute}, \texttt{fact\_market\_day}, \texttt{fact\_contagion\_event}, and \texttt{fact\_surveillance\_coverage}. The table avoids mixed grain by keeping minute, day, event, and coverage facts separate.
 \caption{Warehouse dimensional model and fact participation}
 \label{fig:starschema}
 \end{figure}
