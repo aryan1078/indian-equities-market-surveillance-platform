@@ -192,23 +192,23 @@ The system uses polyglot persistence because the workload demands it. Kafka prov
 \node[widebox, below=of warehouse] (api) {FastAPI \\ operational APIs and warehouse query APIs};
 \node[widebox, below=of api] (frontend) {Next.js console \\ operator console and analyst workbench};
 
-\draw[arrow] (provider) -- (collector);
-\draw[arrow] (collector) -- (kafka);
-\draw[arrow] (kafka) -- (storage);
-\draw[arrow] (kafka) -- (anomaly);
-\draw[arrow] (anomaly) -- (contagion);
-\draw[arrow] (storage) -- (cass);
-\draw[arrow] (anomaly) -- (cass);
-\draw[arrow] (anomaly) -- (redis);
-\draw[arrow] (anomaly) -- (pgop);
-\draw[arrow] (contagion) -- (pgop);
-\draw[arrow] (cass) -- (etl);
-\draw[arrow] (pgop) -- (etl);
-\draw[arrow] (etl) -- (warehouse);
-\draw[arrow] (redis) |- (api);
-\draw[arrow] (pgop) |- (api);
-\draw[arrow] (warehouse) -- (api);
-\draw[arrow] (api) -- (frontend);
+\draw[arrow] (provider.south) -- (collector.north);
+\draw[arrow] (collector.south) -- (kafka.north);
+\draw[arrow] (kafka.south west) -- (storage.north);
+\draw[arrow] (kafka.south) -- (anomaly.north);
+\draw[arrow] (anomaly.east) -- (contagion.west);
+\draw[arrow] (storage.south) -- (cass.north);
+\draw[arrow] (anomaly.south west) -- (cass.north east);
+\draw[arrow] (anomaly.south) -- (redis.north);
+\draw[arrow] (anomaly.south east) -- (pgop.north west);
+\draw[arrow] (contagion.south) -- (pgop.north);
+\draw[arrow] (cass.south east) -- (etl.north west);
+\draw[arrow] (pgop.south west) -- (etl.north east);
+\draw[arrow] (etl.south) -- (warehouse.north);
+\draw[arrow] (redis.south) |- (api.west);
+\draw[arrow] (pgop.south) |- (api.east);
+\draw[arrow] (warehouse.south) -- (api.north);
+\draw[arrow] (api.south) -- (frontend.north);
 \end{tikzpicture}
 }
 \caption{High-level system architecture}
