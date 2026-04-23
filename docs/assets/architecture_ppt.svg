@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16324f"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fbfd; }
+      .panel { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1.8; rx: 28; }
+      .title { font: 700 40px "Segoe UI", Aptos, Arial, sans-serif; fill: #111827; }
+      .subtitle { font: 400 21px "Segoe UI", Aptos, Arial, sans-serif; fill: #64748b; }
+      .section { font: 700 15px "Segoe UI", Aptos, Arial, sans-serif; fill: #526a80; letter-spacing: 2.2px; }
+      .box-title { font: 700 24px "Segoe UI", Aptos, Arial, sans-serif; fill: #111827; }
+      .box-text { font: 400 17px "Segoe UI", Aptos, Arial, sans-serif; fill: #46596b; }
+      .arrow { fill: none; stroke: #16324f; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .soft-arrow { fill: none; stroke: #5d7286; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .card { rx: 22; filter: url(#shadow); stroke-width: 2.2; }
+      .ingest { fill: #e8f3fb; stroke: #65a7cf; }
+      .stream { fill: #edf8f3; stroke: #62aa8f; }
+      .store { fill: #fff8eb; stroke: #d8a23d; }
+      .op { fill: #fff1f4; stroke: #d87387; }
+      .warehouse { fill: #f0eefc; stroke: #8e7ddb; }
+      .api { fill: #eef5ff; stroke: #638dc8; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1920" height="1080"/>
+  <text x="92" y="82" class="title">High-Level System Architecture</text>
+  <text x="92" y="118" class="subtitle">Real market data is ingested once, processed by independent consumers, and consolidated into operational and warehouse stores.</text>
+
+  <rect x="74" y="150" width="1772" height="820" class="panel"/>
+
+  <text x="110" y="198" class="section">INGESTION AND TRANSPORT</text>
+  <text x="110" y="398" class="section">STREAM PROCESSING</text>
+  <text x="110" y="578" class="section">OPERATIONAL STORES</text>
+  <text x="110" y="815" class="section">WAREHOUSE, API, AND FRONTEND</text>
+
+  <!-- Ingestion row -->
+  <rect x="120" y="225" width="300" height="104" class="card ingest"/>
+  <text x="270" y="262" text-anchor="middle" class="box-title">Real Market Provider</text>
+  <text x="270" y="292" text-anchor="middle" class="box-text">yfinance adapter</text>
+  <text x="270" y="316" text-anchor="middle" class="box-text">real daily and intraday bars</text>
+
+  <rect x="520" y="225" width="300" height="104" class="card ingest"/>
+  <text x="670" y="262" text-anchor="middle" class="box-title">Collector</text>
+  <text x="670" y="292" text-anchor="middle" class="box-text">normalization and metadata</text>
+  <text x="670" y="316" text-anchor="middle" class="box-text">backfill, live, captured replay</text>
+
+  <rect x="920" y="225" width="300" height="104" class="card ingest"/>
+  <text x="1070" y="262" text-anchor="middle" class="box-title">Kafka</text>
+  <text x="1070" y="292" text-anchor="middle" class="box-text">market_ticks</text>
+  <text x="1070" y="316" text-anchor="middle" class="box-text">anomaly_detections, DLQ</text>
+
+  <path class="arrow" d="M 424 277 H 516"/>
+  <path class="arrow" d="M 824 277 H 916"/>
+
+  <!-- Stream processing row -->
+  <rect x="120" y="425" width="300" height="104" class="card stream"/>
+  <text x="270" y="462" text-anchor="middle" class="box-title">Storage Consumer</text>
+  <text x="270" y="492" text-anchor="middle" class="box-text">validates ticks</text>
+  <text x="270" y="516" text-anchor="middle" class="box-text">persists raw bars</text>
+
+  <rect x="540" y="425" width="320" height="104" class="card stream"/>
+  <text x="700" y="462" text-anchor="middle" class="box-title">Anomaly Engine</text>
+  <text x="700" y="492" text-anchor="middle" class="box-text">EWMA state, z-scores</text>
+  <text x="700" y="516" text-anchor="middle" class="box-text">composite signal</text>
+
+  <rect x="980" y="425" width="320" height="104" class="card stream"/>
+  <text x="1140" y="462" text-anchor="middle" class="box-title">Contagion Engine</text>
+  <text x="1140" y="492" text-anchor="middle" class="box-text">5-minute sector window</text>
+  <text x="1140" y="516" text-anchor="middle" class="box-text">peer spread detection</text>
+
+  <path class="arrow" d="M 1004 329 V 370 H 270 V 421"/>
+  <path class="arrow" d="M 1070 329 V 421"/>
+  <path class="arrow" d="M 1136 329 V 370 H 1140 V 421"/>
+  <path class="arrow" d="M 864 477 H 976"/>
+
+  <!-- Operational stores row -->
+  <rect x="120" y="610" width="320" height="112" class="card store"/>
+  <text x="280" y="649" text-anchor="middle" class="box-title">Cassandra</text>
+  <text x="280" y="680" text-anchor="middle" class="box-text">market_ticks</text>
+  <text x="280" y="706" text-anchor="middle" class="box-text">anomaly_metrics, latest_state</text>
+
+  <rect x="540" y="610" width="320" height="112" class="card store"/>
+  <text x="700" y="649" text-anchor="middle" class="box-title">Redis</text>
+  <text x="700" y="680" text-anchor="middle" class="box-text">engine state</text>
+  <text x="700" y="706" text-anchor="middle" class="box-text">live cache, freshness keys</text>
+
+  <rect x="980" y="610" width="350" height="112" class="card op"/>
+  <text x="1155" y="649" text-anchor="middle" class="box-title">PostgreSQL Operational</text>
+  <text x="1155" y="680" text-anchor="middle" class="box-text">runs, alerts, profiles</text>
+  <text x="1155" y="706" text-anchor="middle" class="box-text">coverage, contagion events</text>
+
+  <path class="arrow" d="M 270 529 V 606"/>
+  <path class="arrow" d="M 620 529 C 540 560, 445 580, 370 606"/>
+  <path class="arrow" d="M 700 529 V 606"/>
+  <path class="arrow" d="M 780 529 C 875 560, 955 580, 1040 606"/>
+  <path class="arrow" d="M 1140 529 V 606"/>
+
+  <!-- Warehouse and API row -->
+  <rect x="365" y="835" width="350" height="104" class="card warehouse"/>
+  <text x="540" y="872" text-anchor="middle" class="box-title">ETL</text>
+  <text x="540" y="902" text-anchor="middle" class="box-text">staging, cleansing, keys</text>
+  <text x="540" y="926" text-anchor="middle" class="box-text">fact loading, view refresh</text>
+
+  <rect x="805" y="835" width="360" height="104" class="card warehouse"/>
+  <text x="985" y="872" text-anchor="middle" class="box-title">PostgreSQL Warehouse</text>
+  <text x="985" y="902" text-anchor="middle" class="box-text">dimensions, facts</text>
+  <text x="985" y="926" text-anchor="middle" class="box-text">materialized analytical views</text>
+
+  <rect x="1450" y="590" width="320" height="112" class="card api"/>
+  <text x="1610" y="630" text-anchor="middle" class="box-title">FastAPI</text>
+  <text x="1610" y="662" text-anchor="middle" class="box-text">operational APIs</text>
+  <text x="1610" y="688" text-anchor="middle" class="box-text">warehouse query APIs</text>
+
+  <rect x="1450" y="790" width="320" height="112" class="card api"/>
+  <text x="1610" y="830" text-anchor="middle" class="box-title">Next.js Console</text>
+  <text x="1610" y="862" text-anchor="middle" class="box-text">operator console</text>
+  <text x="1610" y="888" text-anchor="middle" class="box-text">analyst workbench</text>
+
+  <path class="arrow" d="M 280 722 V 800 H 540 V 831"/>
+  <path class="arrow" d="M 1155 722 V 780 H 540 V 831"/>
+  <path class="arrow" d="M 719 887 H 801"/>
+  <path class="soft-arrow" d="M 860 666 H 910 V 750 H 1610 V 706"/>
+  <path class="soft-arrow" d="M 1334 666 H 1446"/>
+  <path class="soft-arrow" d="M 1169 887 H 1390 V 650 H 1446"/>
+  <path class="arrow" d="M 1610 706 V 786"/>
+
+  <!-- Small annotations -->
+  <text x="1080" y="956" class="section">ETL CONSOLIDATES OPERATIONAL DATA INTO ANALYTICAL FACTS AND VIEWS</text>
+</svg>
