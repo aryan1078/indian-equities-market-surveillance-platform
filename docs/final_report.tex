@@ -21,7 +21,7 @@
 \usepackage{titlesec}
 \usepackage{tikz}
 \usepackage{pgfplots}
-\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds,calc,matrix}
 \pgfplotsset{compat=1.18}
 
 \hypersetup{
@@ -68,7 +68,6 @@
     {\Large Final Project Report\par}
     \vspace{1.2cm}
 
-    {\large Course: \textbf{CS/SS G516 -- Advanced Database Systems}\par}
     \vspace{1.5cm}
 
     \begin{tabular}{ll}
@@ -165,14 +164,13 @@ The system uses polyglot persistence because the workload demands it. Kafka prov
 
 \begin{figure}[H]
 \centering
-\resizebox{0.92\textwidth}{!}{%
 \begin{tikzpicture}[
     node distance=0.55cm and 0.6cm,
-    font=\footnotesize,
-    box/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=3.2cm, minimum height=0.9cm, align=center, inner sep=4pt},
-    widebox/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=6.2cm, minimum height=0.9cm, align=center, inner sep=4pt},
-    store/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=3.3cm, minimum height=0.9cm, align=center, inner sep=4pt},
-    widestore/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=6.2cm, minimum height=0.9cm, align=center, inner sep=4pt},
+    font=\small,
+    box/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=3.0cm, minimum height=0.9cm, align=center, inner sep=5pt},
+    widebox/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=5.8cm, minimum height=0.9cm, align=center, inner sep=5pt},
+    store/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=3.1cm, minimum height=0.9cm, align=center, inner sep=5pt},
+    widestore/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=5.8cm, minimum height=0.9cm, align=center, inner sep=5pt},
     arrow/.style={-{Latex[length=2.5mm]}, thick}
 ]
 \node[widebox] (provider) {Real market provider \\ \texttt{yfinance}, provider adapter layer};
@@ -205,47 +203,45 @@ The system uses polyglot persistence because the workload demands it. Kafka prov
 \draw[arrow] (cass.south east) -- (etl.north west);
 \draw[arrow] (pgop.south west) -- (etl.north east);
 \draw[arrow] (etl.south) -- (warehouse.north);
-\draw[arrow] (redis.south) |- (api.west);
-\draw[arrow] (pgop.south) |- (api.east);
+\draw[arrow] (redis.south) |- ([xshift=-1.5cm]api.north);
+\draw[arrow] (pgop.south) |- ([xshift=1.5cm]api.north);
 \draw[arrow] (warehouse.south) -- (api.north);
 \draw[arrow] (api.south) -- (frontend.north);
 \end{tikzpicture}
-}
 \caption{High-level system architecture}
 \label{fig:architecture}
 \end{figure}
 
-This separation is also how the project applies the central ideas from the data warehousing material used in the course. The warehouse is subject-oriented, because it is organized around stocks, sectors, dates, times, and contagion events rather than around application screens. It is integrated, because source-specific forms are normalized before loading. It is time-variant, because every fact is keyed by date and, where necessary, time. It is non-volatile in the analytical sense, because warehouse facts are loaded through ETL and then queried for analysis rather than updated continuously by business transactions.
+This separation also reflects the way the warehouse is meant to be used. It is subject-oriented, because it is organized around stocks, sectors, dates, times, and contagion events rather than around application screens. It is integrated, because source-specific forms are normalized before loading. It is time-variant, because every fact is keyed by date and, where necessary, time. It is non-volatile in the analytical sense, because warehouse facts are loaded through ETL and then queried for analysis rather than updated continuously by business transactions.
 
 \section{End-to-End Data Flow}
 The easiest way to understand the application is to follow one market bar from source to analysis.
 
 \begin{figure}[htbp]
 \centering
-\resizebox{0.98\textwidth}{!}{%
 \begin{tikzpicture}[
-    node distance=0.2cm,
-    font=\small,
-    step/.style={draw=black!60, rounded corners=3pt, fill=softgray, text width=11.9cm, align=left, inner sep=6pt},
-    arrow/.style={-{Latex[length=2.2mm]}, thick}
+    x=1cm,
+    y=1cm,
+    font=\normalsize,
+    step/.style={draw=black!60, rounded corners=3pt, fill=softgray, text width=6.2cm, minimum height=1.55cm, align=left, inner sep=7pt},
+    arrow/.style={-{Latex[length=2.4mm]}, thick}
 ]
-\node[step] (s1) {\textbf{1. Collection and normalization.} The collector downloads bars, converts timestamps to UTC and IST, adds exchange and sector metadata, assigns a deterministic dedupe key, and emits a canonical \texttt{MarketTick}.};
-\node[step, below=of s1] (s2) {\textbf{2. Kafka publication.} The normalized tick is published to Kafka with the symbol as the message key so that per-symbol ordering is preserved.};
-\node[step, below=of s2] (s3) {\textbf{3. Dual consumption.} One consumer persists the raw tick to Cassandra. In parallel, the anomaly engine pulls the same tick and updates streaming statistics.};
-\node[step, below=of s3] (s4) {\textbf{4. Streaming scoring.} After the warm-up period, the anomaly engine computes return percentage, EWMA mean and variance, price \(z\)-score, volume \(z\)-score, rolling volatility, and the composite score.};
-\node[step, below=of s4] (s5) {\textbf{5. Hot-state persistence.} The anomaly engine writes the metric to Cassandra, refreshes Redis live state, records surveillance coverage in PostgreSQL, and emits anomaly detections to Kafka.};
-\node[step, below=of s5] (s6) {\textbf{6. Contagion evaluation.} The contagion engine opens a five-minute observation window, tracks anomalous sector peers, and writes one finalized contagion event to PostgreSQL.};
-\node[step, below=of s6] (s7) {\textbf{7. End-of-day ETL.} The ETL service extracts anomaly metrics for a trading date, loads staging, derives contagion flags, assigns surrogate keys, loads warehouse facts, and refreshes analytical views.};
-\node[step, below=of s7] (s8) {\textbf{8. User-facing analytics.} FastAPI serves live operational views from Redis/PostgreSQL and historical analysis from the warehouse, while the frontend exposes both operator and analyst workflows.};
-\draw[arrow] (s1) -- (s2);
-\draw[arrow] (s2) -- (s3);
-\draw[arrow] (s3) -- (s4);
-\draw[arrow] (s4) -- (s5);
-\draw[arrow] (s5) -- (s6);
-\draw[arrow] (s6) -- (s7);
-\draw[arrow] (s7) -- (s8);
+\node[step] (s1) at (0,0) {\textbf{1. Collection and normalization.} The collector downloads bars, converts timestamps to UTC and IST, adds exchange and sector metadata, assigns a deterministic dedupe key, and emits a canonical \texttt{MarketTick}.};
+\node[step] (s2) at (7.5,0) {\textbf{2. Kafka publication.} The normalized tick is published to Kafka with the symbol as the message key so that per-symbol ordering is preserved.};
+\node[step] (s3) at (7.5,-2.35) {\textbf{3. Dual consumption.} One consumer persists the raw tick to Cassandra. In parallel, the anomaly engine pulls the same tick and updates streaming statistics.};
+\node[step] (s4) at (0,-2.35) {\textbf{4. Streaming scoring.} After the warm-up period, the anomaly engine computes return percentage, EWMA mean and variance, price \(z\)-score, volume \(z\)-score, rolling volatility, and the composite score.};
+\node[step] (s5) at (0,-4.7) {\textbf{5. Hot-state persistence.} The anomaly engine writes the metric to Cassandra, refreshes Redis live state, records surveillance coverage in PostgreSQL, and emits anomaly detections to Kafka.};
+\node[step] (s6) at (7.5,-4.7) {\textbf{6. Contagion evaluation.} The contagion engine opens a five-minute observation window, tracks anomalous sector peers, and writes one finalized contagion event to PostgreSQL.};
+\node[step] (s7) at (7.5,-7.05) {\textbf{7. End-of-day ETL.} The ETL service extracts anomaly metrics for a trading date, loads staging, derives contagion flags, assigns surrogate keys, loads warehouse facts, and refreshes analytical views.};
+\node[step] (s8) at (0,-7.05) {\textbf{8. User-facing analytics.} FastAPI serves live operational views from Redis/PostgreSQL and historical analysis from the warehouse, while the frontend exposes both operator and analyst workflows.};
+\draw[arrow] (s1.east) -- (s2.west);
+\draw[arrow] (s2.south) -- (s3.north);
+\draw[arrow] (s3.west) -- (s4.east);
+\draw[arrow] (s4.south) -- (s5.north);
+\draw[arrow] (s5.east) -- (s6.west);
+\draw[arrow] (s6.south) -- (s7.north);
+\draw[arrow] (s7.west) -- (s8.east);
 \end{tikzpicture}
-}
 \caption{The data journey from ingestion to analytics}
 \label{fig:dataflow}
 \end{figure}
@@ -305,7 +301,7 @@ PostgreSQL has an operational schema that stores the parts of the system that ar
     \item \texttt{operational.stock\_profiles}, \texttt{stock\_daily\_bars}, and \texttt{alert\_events} support the UI and system operations.
 \end{itemize}
 
-This layer matters for the viva because it shows that the project distinguishes between operational truth and analytical truth. Not every relational table belongs in the warehouse; some belong to the live system itself.
+This separation keeps operational truth and analytical truth distinct. Not every relational table belongs in the warehouse; some belong to the live system itself.
 
 \subsection{PostgreSQL Warehouse Schema}
 The warehouse schema is defined in \path{infra/postgres/init.sql} and extended in \path{infra/postgres/runtime-migrations.sql}. It follows a star-schema style design with explicit grain.
@@ -313,33 +309,34 @@ The warehouse schema is defined in \path{infra/postgres/init.sql} and extended i
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
-    dim/.style={draw=accent, rounded corners=3pt, fill=softaccent, minimum width=3cm, minimum height=0.9cm, align=center},
-    fact/.style={draw=black!70, rounded corners=3pt, fill=softgray, minimum width=3.6cm, minimum height=1.0cm, align=center},
-    arrow/.style={-{Latex[length=2.2mm]}, thick}
+    font=\footnotesize,
+    dim/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=2.2cm, minimum height=0.9cm, align=center, inner sep=4pt},
+    fact/.style={draw=black!70, rounded corners=3pt, fill=softgray, text width=2.45cm, minimum height=1.0cm, align=center, inner sep=4pt},
+    link/.style={draw=black!55, line width=0.5pt}
 ]
-\node[fact] (minute) at (0,0) {\textbf{fact\_anomaly\_minute}\\minute-grain signal facts};
-\node[fact] (day) at (0,-2.2) {\textbf{fact\_market\_day}\\stock-day summary facts};
-\node[fact] (contagion) at (0,-4.4) {\textbf{fact\_contagion\_event}\\event-grain contagion facts};
-\node[fact] (coverage) at (0,-6.6) {\textbf{fact\_surveillance\_coverage}\\factless monitoring coverage};
-
-\node[dim] (stock) at (-5.2,-1.1) {\textbf{dim\_stock}};
-\node[dim] (sector) at (5.2,-1.1) {\textbf{dim\_sector}};
-\node[dim] (date) at (-5.2,-4.5) {\textbf{dim\_date}};
-\node[dim] (time) at (5.2,-4.5) {\textbf{dim\_time}};
-\node[dim] (exchange) at (0,-8.4) {\textbf{dim\_exchange}};
-
-\foreach \target in {minute,day,contagion,coverage}
-    \draw[arrow] (stock.east) -- (\target.west);
-\foreach \target in {minute,day,contagion}
-    \draw[arrow] (sector.west) -- (\target.east);
-\foreach \target in {minute,day,contagion,coverage}
-    \draw[arrow] (date.east) -- (\target.west);
-\foreach \target in {minute,coverage}
-    \draw[arrow] (time.west) -- (\target.east);
-\foreach \target in {minute,day}
-    \draw[arrow] (exchange.north) -- (\target.south);
+\matrix[matrix of nodes,
+        nodes={anchor=center},
+        column sep=0.26cm,
+        row sep=0.34cm] (m) {
+    |[dim]| \shortstack{\textbf{Dimension} \\ \textbf{/ fact}} &
+    |[fact]| \shortstack{\textbf{fact\_anomaly\_minute} \\ minute-grain signal facts} &
+    |[fact]| \shortstack{\textbf{fact\_market\_day} \\ stock-day summary facts} &
+    |[fact]| \shortstack{\textbf{fact\_contagion\_event} \\ event-grain contagion facts} &
+    |[fact]| \shortstack{\textbf{fact\_surveillance\_coverage} \\ factless monitoring coverage} \\
+    |[dim]| \textbf{dim\_stock} & $\bullet$ & $\bullet$ & $\bullet$ & $\bullet$ \\
+    |[dim]| \textbf{dim\_sector} & $\bullet$ & $\bullet$ & $\bullet$ & \\
+    |[dim]| \textbf{dim\_date} & $\bullet$ & $\bullet$ & $\bullet$ & $\bullet$ \\
+    |[dim]| \textbf{dim\_time} & $\bullet$ & & & $\bullet$ \\
+    |[dim]| \textbf{dim\_exchange} & $\bullet$ & $\bullet$ & & \\
+};
+\foreach \col in {2,3,4,5} {
+    \draw[link] (m-1-\col.south) -- (m-6-\col.north);
+}
+\foreach \row in {2,3,4,5,6} {
+    \draw[link] (m-\row-1.east) -- (m-\row-5.west);
+}
 \end{tikzpicture}
-\caption{Warehouse dimensional model}
+\caption{Warehouse dimensional model and fact participation}
 \label{fig:starschema}
 \end{figure}
 
@@ -371,7 +368,7 @@ Several materialized views are prebuilt for common analytical questions:
     \item \texttt{warehouse.mv\_intraday\_pressure\_profile}
 \end{itemize}
 
-These views are not arbitrary extras. They correspond to the kinds of questions an analyst or evaluator is likely to ask: Which sectors were under the most pressure? Which stocks remained persistently abnormal? What part of the trading session concentrated the highest signal intensity? Did contagion cluster around a few names or spread widely?
+These views correspond to the kinds of questions an analyst is likely to ask: Which sectors were under the most pressure? Which stocks remained persistently abnormal? What part of the trading session concentrated the highest signal intensity? Did contagion cluster around a few names or spread widely?
 
 \subsection{Analyst Query Engine}
 The analyst workbench is exposed in the UI as a visual query builder, but it is backed by a deliberately constrained query engine rather than unrestricted SQL execution. The metadata catalog lives in \path{services/api/src/api_service/main.py} in the function \path{_warehouse_query_catalog}. Each dataset declares which dimensions, measures, filters, grouping modes, and sorts are allowed. The API then translates a user selection into a safe SQL statement over warehouse facts or views.
@@ -511,7 +508,7 @@ For a presentation, the strongest demo is one that moves from operator value to 
 This sequence works well because it tells a story. The audience first sees the problem in operational terms, then sees how the system reasons about it, then sees how the historical layer makes that same data useful for analysts.
 
 \section{Limitations and Future Work}
-The system is strong enough for a serious course project, but the honest version of the project still has clear limitations.
+The system is strong enough to support a serious end-to-end demonstration, but the honest version of the project still has clear limitations.
 
 First, the current provider configuration uses \texttt{yfinance}. This is acceptable for a real-data-only build and for a defensible demo, but it constrains how much long-horizon intraday depth can be loaded without moving to a broker-grade historical source. The code already includes an \texttt{Upstox} adapter path, but it is not configured in the current deployment and is therefore not claimed as active.
 
@@ -535,6 +532,6 @@ This project began with a simple but demanding requirement: build a system that 
 
 Just as importantly, the project remains defensible. It does not inflate its claims. It does not rely on synthetic intraday generation. It does not blur the difference between projected scale and actual materialized rows. What it does provide is a coherent, real-data system with a clean architectural story, a usable interface, a warehouse that supports analysis rather than merely storing leftovers, and enough engineering discipline to hold up under questioning.
 
-From the perspective of an Advanced Database Systems course, that is the main contribution of the project. The system is not interesting because it uses many technologies. It is interesting because each storage choice is tied to a workload, each data transformation has a purpose, and the final application shows how distributed ingestion and dimensional analytics can coexist in one carefully designed product.
+That is the main contribution of the project. The system is not interesting because it uses many technologies. It is interesting because each storage choice is tied to a workload, each data transformation has a purpose, and the final application shows how distributed ingestion and dimensional analytics can coexist in one carefully designed product.
 
 \end{document}
