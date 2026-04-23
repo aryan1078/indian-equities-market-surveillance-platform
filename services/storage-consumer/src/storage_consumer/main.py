@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from cassandra.query import BatchStatement, PreparedStatement
+from cassandra.concurrent import execute_concurrent_with_args
+from cassandra.query import PreparedStatement
 from kafka.consumer.fetcher import ConsumerRecord
 
 from market_surveillance.db import get_cassandra_session
@@ -54,9 +55,8 @@ def send_to_dlq(producer, raw_payload: bytes, reason: str) -> None:
 
 def handle_batch(records: list[ConsumerRecord], tick_stmt: PreparedStatement, latest_stmt: PreparedStatement, producer) -> None:
     session = get_cassandra_session()
-    batch = BatchStatement()
-    latest_batch = BatchStatement()
-    processed = 0
+    tick_args: list[tuple[object, ...]] = []
+    latest_args: list[tuple[object, ...]] = []
 
     for record in records:
         try:
@@ -65,8 +65,7 @@ def handle_batch(records: list[ConsumerRecord], tick_stmt: PreparedStatement, la
             send_to_dlq(producer, record.value, f"validation_error:{exc}")
             continue
 
-        batch.add(
-            tick_stmt,
+        tick_args.append(
             (
                 tick.symbol,
                 tick.trading_date,
@@ -86,10 +85,9 @@ def handle_batch(records: list[ConsumerRecord], tick_stmt: PreparedStatement, la
                 tick.source.provider,
                 tick.source.run_id,
                 tick.dedupe_key,
-            ),
+            )
         )
-        latest_batch.add(
-            latest_stmt,
+        latest_args.append(
             (
                 tick.symbol,
                 tick.trading_date,
@@ -98,13 +96,30 @@ def handle_batch(records: list[ConsumerRecord], tick_stmt: PreparedStatement, la
                 tick.volume,
                 0.0,
                 False,
-            ),
+            )
         )
-        processed += 1
 
-    if processed:
-        session.execute(batch)
-        session.execute(latest_batch)
+    if not tick_args:
+        return
+
+    tick_results = execute_concurrent_with_args(
+        session,
+        tick_stmt,
+        tick_args,
+        concurrency=32,
+        raise_on_first_error=False,
+    )
+    latest_results = execute_concurrent_with_args(
+        session,
+        latest_stmt,
+        latest_args,
+        concurrency=32,
+        raise_on_first_error=False,
+    )
+
+    for success, result in list(tick_results) + list(latest_results):
+        if not success:
+            raise RuntimeError(f"Cassandra write failure: {result}")
 
 
 def main() -> None:
@@ -118,6 +133,7 @@ def main() -> None:
         polled = consumer.poll(timeout_ms=1000, max_records=100)
         for batch in polled.values():
             handle_batch(batch, tick_stmt, latest_stmt, producer)
+            consumer.commit()
 
 
 if __name__ == "__main__":

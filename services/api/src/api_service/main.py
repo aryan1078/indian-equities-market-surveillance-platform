@@ -1103,6 +1103,31 @@ def _latest_market_map() -> dict[str, dict[str, Any]]:
     return _cached("latest:market", 15.0, _load_latest_market_map)
 
 
+def _partition_row_count(
+    session,
+    table_name: str,
+    latest_market: dict[str, dict[str, Any]],
+) -> int | None:
+    if not latest_market:
+        return 0
+
+    stmt = session.prepare(f"SELECT count(*) FROM {table_name} WHERE symbol = ? AND trading_date = ?")
+    total = 0
+    seen: set[tuple[str, date]] = set()
+    try:
+        for symbol, item in latest_market.items():
+            trading_date = date.fromisoformat(str(item["trading_date"]))
+            partition = (symbol, trading_date)
+            if partition in seen:
+                continue
+            seen.add(partition)
+            row = session.execute(stmt, partition).one()
+            total += int(row["count"]) if row and row.get("count") is not None else 0
+    except Exception:
+        return None
+    return total
+
+
 def _load_latest_anomaly_map() -> dict[str, dict[str, Any]]:
     latest_market = _latest_market_map()
     if not latest_market:
@@ -1376,7 +1401,7 @@ def _system_scale_snapshot(
     history_map: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if profiles is None and history_map is None:
-        return _cached("system:scale", 15.0, lambda: _system_scale_snapshot(_profiles(), _history_coverage_map()))
+        return _cached("system:scale", 120.0, lambda: _system_scale_snapshot(_profiles(), _history_coverage_map()))
 
     profiles = profiles or _profiles()
     history_map = history_map or _history_coverage_map()
@@ -1430,12 +1455,13 @@ def _system_scale_snapshot(
         completed_ingestion_runs = [row for row in active_ingestion_runs if row["status"] == "completed"]
 
     session = get_cassandra_session()
+    latest_market = _latest_market_map()
     bulk_streaming_counts = _streaming_counts_from_bulk_runs(active_ingestion_runs)
     completed_bulk_counts = _streaming_counts_from_bulk_runs(completed_ingestion_runs)
     streaming_counts: dict[str, int | None] = {
         "market_ticks": bulk_streaming_counts["market_ticks"] or None,
         "anomaly_metrics": bulk_streaming_counts["anomaly_metrics"] or None,
-        "latest_market_state": len(_latest_market_map()),
+        "latest_market_state": len(latest_market),
         "inflight_market_ticks": max(bulk_streaming_counts["market_ticks"] - completed_bulk_counts["market_ticks"], 0),
         "inflight_anomaly_metrics": max(
             bulk_streaming_counts["anomaly_metrics"] - completed_bulk_counts["anomaly_metrics"], 0
@@ -1445,13 +1471,17 @@ def _system_scale_snapshot(
         "market_ticks": "market_ticks",
         "anomaly_metrics": "anomaly_metrics",
     }.items():
-        if streaming_counts[key] is not None:
-            continue
         try:
-            row = session.execute(f"SELECT count(*) FROM {table_name}").one()
-            streaming_counts[key] = int(row["count"]) if row else 0
+            partition_count = _partition_row_count(session, table_name, latest_market)
+            if partition_count is not None:
+                actual_count = partition_count
+            else:
+                row = session.execute(f"SELECT count(*) FROM {table_name}").one()
+                actual_count = int(row["count"]) if row else 0
+            streaming_counts[key] = max(int(streaming_counts[key] or 0), actual_count)
         except Exception:
-            streaming_counts[key] = None
+            if streaming_counts[key] is None:
+                streaming_counts[key] = None
 
     redis = get_redis()
     streaming_counts["redis_keys"] = int(redis.dbsize())
@@ -1997,9 +2027,7 @@ def system_health() -> dict[str, Any]:
 
 @app.get("/api/system/scale")
 def system_scale() -> dict[str, Any]:
-    profiles = _profiles()
-    history_map = _history_coverage_map()
-    return _system_scale_snapshot(profiles=profiles, history_map=history_map)
+    return _system_scale_snapshot()
 
 
 @app.get("/api/methodology")

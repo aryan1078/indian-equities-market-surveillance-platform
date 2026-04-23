@@ -157,7 +157,6 @@ def main() -> None:
                     ):
                         window.affected_symbols.add(detection.symbol)
                         window.peer_scores.append(detection.composite_score)
-                        write_event(build_event(window, detection.timestamp_utc))
 
                 if detection.symbol in active_windows or not detection.is_anomalous:
                     continue
@@ -180,6 +179,7 @@ def main() -> None:
                     ).hexdigest(),
                 )
             flush_expired(active_windows, datetime.now(tz=UTC))
+            consumer.commit()
 
 
 if __name__ == "__main__":

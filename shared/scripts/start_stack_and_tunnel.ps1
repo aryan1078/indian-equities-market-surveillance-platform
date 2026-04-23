@@ -48,6 +48,18 @@ function Wait-HttpOk {
     throw "Timed out waiting for $Url"
 }
 
+function Invoke-WarmRequest {
+    param(
+        [string]$Url
+    )
+
+    try {
+        Invoke-WebRequest -Uri $Url -TimeoutSec 120 -UseBasicParsing | Out-Null
+    } catch {
+        Write-Host "Warm-up skipped for $Url" -ForegroundColor Yellow
+    }
+}
+
 function Stop-CloudflareQuickTunnel {
     param(
         [string]$ContainerName
@@ -268,6 +280,18 @@ try {
 
     Write-Step 'Waiting for the frontend to become available'
     $null = Wait-HttpOk -Url "http://localhost:$UiPort"
+
+    Write-Step 'Prewarming critical API caches'
+    foreach ($warmUrl in @(
+        "http://localhost:$ApiPort/api/overview",
+        "http://localhost:$ApiPort/api/stocks/screener?days=45&limit=80",
+        "http://localhost:$ApiPort/api/system/scale",
+        "http://localhost:$ApiPort/api/warehouse/summary",
+        "http://localhost:$ApiPort/api/warehouse/query-metadata",
+        "http://localhost:$ApiPort/api/replay/status"
+    )) {
+        Invoke-WarmRequest -Url $warmUrl
+    }
 
     $publicUrl = $null
     $tunnelInfo = $null

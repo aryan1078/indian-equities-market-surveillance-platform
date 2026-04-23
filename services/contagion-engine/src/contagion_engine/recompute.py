@@ -140,11 +140,6 @@ def recompute(trading_date: date, source_run_id: str | None = None) -> int:
             ):
                 window.affected_symbols.add(detection.symbol)
                 window.peer_scores.append(detection.composite_score)
-                write_event(
-                    build_event(window, detection.timestamp_utc),
-                    update_live_cache=False,
-                    emit_alerts=False,
-                )
 
         if detection.symbol in active_windows or not detection.is_anomalous:
             continue
