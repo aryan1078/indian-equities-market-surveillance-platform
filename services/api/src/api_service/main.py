@@ -1344,9 +1344,22 @@ def _latest_run(mode: str | None = None, modes: tuple[str, ...] | None = None) -
     return dict(row) if row else None
 
 
-def _overview_feed_mode(latest_run: dict[str, Any] | None, latest_intraday_run: dict[str, Any] | None) -> str | None:
+def _overview_feed_mode(
+    latest_run: dict[str, Any] | None,
+    latest_intraday_run: dict[str, Any] | None,
+    latest_market: list[dict[str, Any]] | None = None,
+) -> str | None:
+    latest_market = latest_market or []
+    latest_market_date = max((_record_trading_date(record) for record in latest_market), default=None)
+    today_market_date = as_market_time(datetime.now(UTC)).date()
+
     if latest_intraday_run:
-        return str(latest_intraday_run["mode"])
+        latest_mode = str(latest_intraday_run["mode"])
+        if latest_mode == "live" and latest_market_date != today_market_date:
+            fallback_run = _latest_run(modes=("replay", "capture_replay", "backfill"))
+            if fallback_run:
+                return str(fallback_run["mode"])
+        return latest_mode
     if latest_run:
         return str(latest_run["mode"])
     return None
@@ -2187,7 +2200,7 @@ def overview() -> dict[str, Any]:
             as_of = max(item["timestamp_ist"] for item in latest_market if item.get("timestamp_ist"))
         return {
             "as_of": as_of,
-            "market_mode": _overview_feed_mode(latest_run, latest_intraday_run),
+            "market_mode": _overview_feed_mode(latest_run, latest_intraday_run, latest_market),
             "latest_ingestion_mode": latest_run["mode"] if latest_run else None,
             "live_market": latest_market,
             "top_anomalies": sorted(latest_anomalies, key=lambda item: item["composite_score"], reverse=True)[:10],
