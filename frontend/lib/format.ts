@@ -5,11 +5,17 @@ export function shortId(value: string | null | undefined, size = 8) {
   return value.length <= size ? value : `${value.slice(0, size)}...`;
 }
 
+const MARKET_TIMEZONE = "Asia/Kolkata";
+
 function toDate(value: string | null | undefined) {
   if (!value) {
     return null;
   }
-  const parsed = new Date(value);
+  const normalized =
+    /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? `${value}T00:00:00+05:30`
+      : value;
+  const parsed = new Date(normalized);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
@@ -26,6 +32,7 @@ export function formatDateTime(value: string | null | undefined) {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+    timeZone: MARKET_TIMEZONE,
   });
 }
 
@@ -38,6 +45,7 @@ export function formatDate(value: string | null | undefined) {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone: MARKET_TIMEZONE,
   });
 }
 
@@ -49,6 +57,7 @@ export function formatMonth(value: string | null | undefined) {
   return parsed.toLocaleDateString("en-IN", {
     month: "short",
     year: "numeric",
+    timeZone: MARKET_TIMEZONE,
   });
 }
 
@@ -62,6 +71,7 @@ export function formatTime(value: string | null | undefined) {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+    timeZone: MARKET_TIMEZONE,
   });
 }
 
