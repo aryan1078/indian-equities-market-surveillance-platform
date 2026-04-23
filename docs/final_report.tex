@@ -14,6 +14,7 @@
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{float}
+\usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{hyperref}
 \usepackage{fancyhdr}
@@ -164,30 +165,31 @@ The system uses polyglot persistence because the workload demands it. Kafka prov
 
 \begin{figure}[H]
 \centering
+\resizebox{0.92\textwidth}{!}{%
 \begin{tikzpicture}[
     node distance=0.55cm and 0.6cm,
-    font=\small,
-    box/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=0.24\textwidth, minimum height=0.9cm, align=center, inner sep=5pt},
-    widebox/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=0.44\textwidth, minimum height=0.9cm, align=center, inner sep=5pt},
-    store/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=0.24\textwidth, minimum height=0.9cm, align=center, inner sep=5pt},
-    widestore/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=0.44\textwidth, minimum height=0.9cm, align=center, inner sep=5pt},
+    font=\footnotesize,
+    box/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=3.2cm, minimum height=0.9cm, align=center, inner sep=4pt},
+    widebox/.style={draw=accent, rounded corners=3pt, fill=softaccent, text width=6.2cm, minimum height=0.9cm, align=center, inner sep=4pt},
+    store/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=3.3cm, minimum height=0.9cm, align=center, inner sep=4pt},
+    widestore/.style={draw=black!65, rounded corners=3pt, fill=softgray, text width=6.2cm, minimum height=0.9cm, align=center, inner sep=4pt},
     arrow/.style={-{Latex[length=2.5mm]}, thick}
 ]
-\node[widebox] (provider) {Real market provider \\ \texttt{yfinance} and provider adapter layer};
-\node[widebox, below=of provider] (collector) {Collector \\ normalization, backfill, captured replay, live polling};
-\node[widebox, below=of collector] (kafka) {Kafka \\ \texttt{market\_ticks}, \texttt{anomaly\_detections}, dead-letter flow};
+\node[widebox] (provider) {Real market provider \\ \texttt{yfinance}, provider adapter layer};
+\node[widebox, below=of provider] (collector) {Collector \\ normalization, backfill, replay capture, live polling};
+\node[widebox, below=of collector] (kafka) {Kafka \\ \texttt{market\_ticks}, \texttt{anomaly\_detections}, DLQ};
 
-\node[box, below left=0.95cm and 3.0cm of kafka] (storage) {Storage consumer};
+\node[box, below left=0.95cm and 2.35cm of kafka] (storage) {Storage consumer};
 \node[box, below=0.95cm of kafka] (anomaly) {Anomaly engine};
-\node[box, below right=0.95cm and 3.0cm of kafka] (contagion) {Contagion engine};
+\node[box, below right=0.95cm and 2.35cm of kafka] (contagion) {Contagion engine};
 
-\node[store, below=of storage] (cass) {Cassandra \\ \texttt{market\_ticks}, \texttt{anomaly\_metrics}, \texttt{latest\_market\_state}};
+\node[store, below=of storage] (cass) {Cassandra \\ ticks, anomaly metrics, latest market state};
 \node[store, below=of anomaly] (redis) {Redis \\ engine state, live cache, freshness keys};
 \node[store, below=of contagion] (pgop) {PostgreSQL operational \\ runs, alerts, profiles, contagion events};
 
-\node[widebox, below=0.95cm of redis] (etl) {ETL \\ staging, cleansing, surrogate key assignment, fact loading, view refresh};
-\node[widestore, below=of etl] (warehouse) {PostgreSQL warehouse \\ dimensions, fact tables, materialized analytical views};
-\node[widebox, below=of warehouse] (api) {FastAPI \\ operational APIs plus warehouse query APIs};
+\node[widebox, below=0.95cm of redis] (etl) {ETL \\ staging, cleansing, surrogate keys, fact loading, view refresh};
+\node[widestore, below=of etl] (warehouse) {PostgreSQL warehouse \\ dimensions, facts, materialized views};
+\node[widebox, below=of warehouse] (api) {FastAPI \\ operational APIs and warehouse query APIs};
 \node[widebox, below=of api] (frontend) {Next.js console \\ operator console and analyst workbench};
 
 \draw[arrow] (provider) -- (collector);
@@ -208,6 +210,7 @@ The system uses polyglot persistence because the workload demands it. Kafka prov
 \draw[arrow] (warehouse) -- (api);
 \draw[arrow] (api) -- (frontend);
 \end{tikzpicture}
+}
 \caption{High-level system architecture}
 \label{fig:architecture}
 \end{figure}
@@ -219,20 +222,21 @@ The easiest way to understand the application is to follow one market bar from s
 
 \begin{figure}[htbp]
 \centering
+\resizebox{0.94\textwidth}{!}{%
 \begin{tikzpicture}[
-    node distance=0.22cm,
-    font=\small,
-    step/.style={draw=black!60, rounded corners=3pt, fill=softgray, text width=0.88\textwidth, align=left, inner sep=6pt},
+    node distance=0.18cm,
+    font=\footnotesize,
+    step/.style={draw=black!60, rounded corners=3pt, fill=softgray, text width=13.1cm, align=left, inner sep=5pt},
     arrow/.style={-{Latex[length=2.2mm]}, thick}
 ]
 \node[step] (s1) {\textbf{1. Collection and normalization.} The collector downloads bars, converts timestamps to UTC and IST, adds exchange and sector metadata, assigns a deterministic dedupe key, and emits a canonical \texttt{MarketTick}.};
 \node[step, below=of s1] (s2) {\textbf{2. Kafka publication.} The normalized tick is published to Kafka with the symbol as the message key so that per-symbol ordering is preserved.};
 \node[step, below=of s2] (s3) {\textbf{3. Dual consumption.} One consumer persists the raw tick to Cassandra. In parallel, the anomaly engine pulls the same tick and updates streaming statistics.};
-\node[step, below=of s3] (s4) {\textbf{4. Streaming scoring.} After the warm-up period, the anomaly engine computes return percentage, EWMA mean and variance, price \(z\)-score, volume \(z\)-score, rolling volatility, and a composite score.};
-\node[step, below=of s4] (s5) {\textbf{5. Hot-state persistence.} The anomaly engine persists the metric to Cassandra, refreshes the Redis state and latest-view cache, records surveillance coverage in PostgreSQL, and emits anomaly detections to Kafka.};
-\node[step, below=of s5] (s6) {\textbf{6. Contagion evaluation.} The contagion engine opens a five-minute observation window for a trigger stock, tracks sector peers, and writes a single relational event to PostgreSQL when the window closes.};
-\node[step, below=of s6] (s7) {\textbf{7. End-of-day ETL.} The ETL service extracts anomaly metrics for a trading date, loads a staging table, derives contagion flags, assigns surrogate keys, loads warehouse facts, and refreshes analytical views.};
-\node[step, below=of s7] (s8) {\textbf{8. User-facing analytics.} The FastAPI service serves live operational views from Redis/PostgreSQL and historical analysis from the warehouse. The frontend exposes these through operational dashboards and an analyst workbench.};
+\node[step, below=of s3] (s4) {\textbf{4. Streaming scoring.} After the warm-up period, the anomaly engine computes return percentage, EWMA mean and variance, price \(z\)-score, volume \(z\)-score, rolling volatility, and the composite score.};
+\node[step, below=of s4] (s5) {\textbf{5. Hot-state persistence.} The anomaly engine writes the metric to Cassandra, refreshes Redis live state, records surveillance coverage in PostgreSQL, and emits anomaly detections to Kafka.};
+\node[step, below=of s5] (s6) {\textbf{6. Contagion evaluation.} The contagion engine opens a five-minute observation window, tracks anomalous sector peers, and writes one finalized contagion event to PostgreSQL.};
+\node[step, below=of s6] (s7) {\textbf{7. End-of-day ETL.} The ETL service extracts anomaly metrics for a trading date, loads staging, derives contagion flags, assigns surrogate keys, loads warehouse facts, and refreshes analytical views.};
+\node[step, below=of s7] (s8) {\textbf{8. User-facing analytics.} FastAPI serves live operational views from Redis/PostgreSQL and historical analysis from the warehouse, while the frontend exposes both operator and analyst workflows.};
 \draw[arrow] (s1) -- (s2);
 \draw[arrow] (s2) -- (s3);
 \draw[arrow] (s3) -- (s4);
@@ -241,6 +245,7 @@ The easiest way to understand the application is to follow one market bar from s
 \draw[arrow] (s6) -- (s7);
 \draw[arrow] (s7) -- (s8);
 \end{tikzpicture}
+}
 \caption{The data journey from ingestion to analytics}
 \label{fig:dataflow}
 \end{figure}
