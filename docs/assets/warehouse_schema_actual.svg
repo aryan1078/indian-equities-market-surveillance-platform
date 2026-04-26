@@ -1,0 +1,211 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3200" height="1800" viewBox="0 0 3200 1800">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fbfd; }
+      .title { font: 800 48px "Segoe UI", Aptos, Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 25px "Segoe UI", Aptos, Arial, sans-serif; fill: #64748b; }
+      .section { font: 800 21px "Segoe UI", Aptos, Arial, sans-serif; fill: #475569; letter-spacing: 2.8px; }
+      .card { rx: 18; filter: url(#shadow); stroke-width: 2.2; }
+      .dim { fill: #eef6ff; stroke: #4f8fc2; }
+      .fact { fill: #fff8ea; stroke: #d49b2c; }
+      .view { fill: #f3efff; stroke: #8b77db; }
+      .stage { fill: #ecfdf3; stroke: #43a976; }
+      .card-title { font: 800 26px "Segoe UI", Aptos, Arial, sans-serif; fill: #0f172a; }
+      .grain { font: 700 18px "Segoe UI", Aptos, Arial, sans-serif; fill: #475569; }
+      .attr { font: 400 19px "Consolas", "Cascadia Mono", monospace; fill: #1e293b; }
+      .attr-small { font: 400 17px "Consolas", "Cascadia Mono", monospace; fill: #1e293b; }
+      .note { font: 400 18px "Segoe UI", Aptos, Arial, sans-serif; fill: #475569; }
+      .key { fill: #0f766e; font-weight: 700; }
+      .fk { fill: #b45309; font-weight: 700; }
+      .measure { fill: #334155; }
+      .relation { fill: none; stroke: #64748b; stroke-width: 2.2; opacity: 0.55; marker-end: url(#arrow); }
+      .etl { fill: none; stroke: #16a34a; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .mvline { fill: none; stroke: #7c3aed; stroke-width: 3.2; stroke-linecap: round; marker-end: url(#arrow); }
+      .legend { font: 700 18px "Segoe UI", Aptos, Arial, sans-serif; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="3200" height="1800"/>
+  <text x="80" y="82" class="title">Actual PostgreSQL Warehouse Schema</text>
+  <text x="80" y="122" class="subtitle">Dimensions provide descriptive context. Facts store measurable surveillance records at explicit grains. Materialized views precompute analyst-facing summaries.</text>
+
+  <text x="95" y="182" class="section">DIMENSIONS</text>
+  <text x="870" y="182" class="section">FACT TABLES</text>
+  <text x="1875" y="182" class="section">MATERIALIZED ANALYTICAL VIEWS</text>
+
+  <!-- Dimensions -->
+  <rect x="80" y="210" width="650" height="270" class="card dim"/>
+  <text x="105" y="248" class="card-title">warehouse.dim_stock</text>
+  <text x="105" y="280" class="grain">Slowly-changing stock identity dimension</text>
+  <text x="105" y="315" class="attr"><tspan class="key">PK</tspan> stock_sk bigserial</text>
+  <text x="105" y="345" class="attr">symbol text</text>
+  <text x="105" y="375" class="attr">company_name text</text>
+  <text x="105" y="405" class="attr">sector_name text</text>
+  <text x="105" y="435" class="attr">exchange_code text</text>
+  <text x="405" y="345" class="attr">valid_from date</text>
+  <text x="405" y="375" class="attr">valid_to date</text>
+  <text x="405" y="405" class="attr">is_current boolean</text>
+  <text x="405" y="435" class="attr-small">UNIQUE(symbol, valid_from)</text>
+
+  <rect x="80" y="505" width="650" height="120" class="card dim"/>
+  <text x="105" y="543" class="card-title">warehouse.dim_sector</text>
+  <text x="105" y="578" class="attr"><tspan class="key">PK</tspan> sector_sk bigserial</text>
+  <text x="390" y="578" class="attr">sector_name text UNIQUE</text>
+
+  <rect x="80" y="650" width="650" height="120" class="card dim"/>
+  <text x="105" y="688" class="card-title">warehouse.dim_exchange</text>
+  <text x="105" y="723" class="attr"><tspan class="key">PK</tspan> exchange_sk bigserial</text>
+  <text x="410" y="723" class="attr">exchange_code text UNIQUE</text>
+
+  <rect x="80" y="795" width="650" height="260" class="card dim"/>
+  <text x="105" y="833" class="card-title">warehouse.dim_date</text>
+  <text x="105" y="865" class="grain">Calendar and reporting date hierarchy</text>
+  <text x="105" y="900" class="attr"><tspan class="key">PK</tspan> date_sk integer</text>
+  <text x="105" y="930" class="attr">calendar_date date UNIQUE</text>
+  <text x="105" y="960" class="attr">year integer</text>
+  <text x="105" y="990" class="attr">quarter integer</text>
+  <text x="405" y="900" class="attr">month integer</text>
+  <text x="405" y="930" class="attr">month_name text</text>
+  <text x="405" y="960" class="attr">day integer</text>
+  <text x="405" y="990" class="attr">day_of_week integer</text>
+  <text x="405" y="1020" class="attr">is_weekend boolean</text>
+
+  <rect x="80" y="1080" width="650" height="180" class="card dim"/>
+  <text x="105" y="1118" class="card-title">warehouse.dim_time</text>
+  <text x="105" y="1153" class="attr"><tspan class="key">PK</tspan> time_sk integer</text>
+  <text x="105" y="1183" class="attr">minute_of_day integer UNIQUE</text>
+  <text x="105" y="1213" class="attr">hour integer</text>
+  <text x="410" y="1183" class="attr">minute integer</text>
+  <text x="410" y="1213" class="attr">label text</text>
+
+  <!-- Staging source -->
+  <rect x="80" y="1445" width="650" height="230" class="card stage"/>
+  <text x="105" y="1483" class="card-title">staging.anomaly_metrics_stage</text>
+  <text x="105" y="1515" class="grain">ETL landing table before fact loading</text>
+  <text x="105" y="1550" class="attr-small">run_id, symbol, trading_date, timestamp_utc</text>
+  <text x="105" y="1578" class="attr-small">timestamp_ist, exchange, sector, close, volume</text>
+  <text x="105" y="1606" class="attr-small">return_pct, rolling_volatility</text>
+  <text x="105" y="1634" class="attr-small">price_z_score, volume_z_score, composite_score</text>
+  <text x="105" y="1662" class="attr-small">is_anomalous, source_run_id, dedupe_key, contagion_flag</text>
+
+  <!-- Facts -->
+  <rect x="850" y="210" width="900" height="330" class="card fact"/>
+  <text x="875" y="248" class="card-title">warehouse.fact_anomaly_minute</text>
+  <text x="875" y="280" class="grain">Grain: one monitored stock-minute anomaly metric</text>
+  <text x="875" y="315" class="attr"><tspan class="fk">FK</tspan> stock_sk bigint → dim_stock</text>
+  <text x="875" y="345" class="attr"><tspan class="fk">FK</tspan> date_sk integer → dim_date</text>
+  <text x="875" y="375" class="attr"><tspan class="fk">FK</tspan> time_sk integer → dim_time</text>
+  <text x="875" y="405" class="attr"><tspan class="fk">FK</tspan> sector_sk bigint → dim_sector</text>
+  <text x="875" y="435" class="attr"><tspan class="fk">FK</tspan> exchange_sk bigint → dim_exchange</text>
+  <text x="1370" y="315" class="attr">composite_score double</text>
+  <text x="1370" y="345" class="attr">price_z_score double</text>
+  <text x="1370" y="375" class="attr">volume_z_score double</text>
+  <text x="1370" y="405" class="attr">rolling_volatility double</text>
+  <text x="1370" y="435" class="attr">contagion_flag boolean</text>
+  <text x="1370" y="465" class="attr">dedupe_key text</text>
+  <text x="1370" y="495" class="attr">source_run_id text</text>
+  <text x="875" y="505" class="attr-small"><tspan class="key">PK</tspan> (stock_sk, date_sk, time_sk)</text>
+
+  <rect x="850" y="575" width="900" height="270" class="card fact"/>
+  <text x="875" y="613" class="card-title">warehouse.fact_market_day</text>
+  <text x="875" y="645" class="grain">Grain: one stock-day summary</text>
+  <text x="875" y="680" class="attr"><tspan class="fk">FK</tspan> stock_sk bigint → dim_stock</text>
+  <text x="875" y="710" class="attr"><tspan class="fk">FK</tspan> date_sk integer → dim_date</text>
+  <text x="875" y="740" class="attr"><tspan class="fk">FK</tspan> sector_sk bigint → dim_sector</text>
+  <text x="875" y="770" class="attr"><tspan class="fk">FK</tspan> exchange_sk bigint → dim_exchange</text>
+  <text x="1370" y="680" class="attr">anomaly_count integer</text>
+  <text x="1370" y="710" class="attr">max_composite_score double</text>
+  <text x="1370" y="740" class="attr">avg_composite_score double</text>
+  <text x="1370" y="770" class="attr">avg_volume_z_score double</text>
+  <text x="1370" y="800" class="attr">contagion_event_count integer</text>
+  <text x="875" y="815" class="attr-small"><tspan class="key">PK</tspan> (stock_sk, date_sk)</text>
+
+  <rect x="850" y="880" width="900" height="260" class="card fact"/>
+  <text x="875" y="918" class="card-title">warehouse.fact_contagion_event</text>
+  <text x="875" y="950" class="grain">Grain: one finalized contagion event</text>
+  <text x="875" y="985" class="attr"><tspan class="key">PK</tspan> event_id text</text>
+  <text x="875" y="1015" class="attr"><tspan class="fk">FK</tspan> stock_sk bigint → dim_stock</text>
+  <text x="875" y="1045" class="attr"><tspan class="fk">FK</tspan> date_sk integer → dim_date</text>
+  <text x="875" y="1075" class="attr"><tspan class="fk">FK</tspan> sector_sk bigint → dim_sector</text>
+  <text x="1370" y="985" class="attr">event_timestamp timestamptz</text>
+  <text x="1370" y="1015" class="attr">affected_count integer</text>
+  <text x="1370" y="1045" class="attr">peer_average_score double</text>
+  <text x="1370" y="1075" class="attr">risk_score double</text>
+  <text x="1370" y="1105" class="attr">rationale text</text>
+
+  <rect x="850" y="1175" width="900" height="230" class="card fact"/>
+  <text x="875" y="1213" class="card-title">warehouse.fact_surveillance_coverage</text>
+  <text x="875" y="1245" class="grain">Grain: one stock-minute monitoring coverage row</text>
+  <text x="875" y="1280" class="attr"><tspan class="fk">FK</tspan> stock_sk bigint → dim_stock</text>
+  <text x="875" y="1310" class="attr"><tspan class="fk">FK</tspan> date_sk integer → dim_date</text>
+  <text x="875" y="1340" class="attr"><tspan class="fk">FK</tspan> time_sk integer → dim_time</text>
+  <text x="1370" y="1280" class="attr">coverage_state text</text>
+  <text x="1370" y="1310" class="attr">source_run_id text</text>
+  <text x="875" y="1370" class="attr-small"><tspan class="key">PK</tspan> (stock_sk, date_sk, time_sk)</text>
+
+  <!-- Materialized views -->
+  <rect x="1850" y="210" width="1190" height="1160" class="card view"/>
+  <text x="1880" y="250" class="card-title">warehouse materialized views</text>
+  <text x="1880" y="285" class="grain">Precomputed summaries refreshed after ETL for dashboard and analyst queries</text>
+
+  <text x="1880" y="340" class="attr">mv_sector_daily_summary</text>
+  <text x="1930" y="368" class="attr-small">calendar_date, sector_name, active_minutes, avg_composite_score, max_composite_score, contagion_minutes</text>
+
+  <text x="1880" y="430" class="attr">mv_sector_monthly_summary</text>
+  <text x="1930" y="458" class="attr-small">year, quarter, month, sector_name, avg_daily_composite_score, max_daily_composite_score, contagion_event_count</text>
+
+  <text x="1880" y="520" class="attr">mv_sector_regime_summary</text>
+  <text x="1930" y="548" class="attr-small">sector_name, sessions_covered, symbols_covered, anomaly_minutes, total_anomalies, contagion_minutes, contagion_event_count, scores</text>
+
+  <text x="1880" y="610" class="attr">mv_stock_signal_leaders</text>
+  <text x="1930" y="638" class="attr-small">symbol, company_name, sector_name, sessions_covered, anomaly_days, total_anomalies, daily scores, latest snapshot</text>
+
+  <text x="1880" y="700" class="attr">mv_sector_momentum_summary</text>
+  <text x="1930" y="728" class="attr-small">sector_name, recent/prior sessions, recent/prior anomalies, score_delta, contagion_delta</text>
+
+  <text x="1880" y="790" class="attr">mv_stock_persistence_summary</text>
+  <text x="1930" y="818" class="attr-small">symbol, company_name, sector_name, anomaly_days, anomaly_day_ratio, recent_5_session_anomalies, days_since_last_anomaly</text>
+
+  <text x="1880" y="880" class="attr">mv_intraday_pressure_profile</text>
+  <text x="1930" y="908" class="attr-small">time_sk, time_label, hour, minute, anomaly_minutes, distinct_stocks, sessions_covered, avg_score, peak_score, contagion_minutes</text>
+
+  <rect x="1880" y="1000" width="1110" height="300" rx="14" fill="#ffffff" stroke="#c4b5fd" stroke-width="1.8"/>
+  <text x="1910" y="1040" class="card-title">Fact-to-view flow</text>
+  <text x="1910" y="1080" class="note">fact_anomaly_minute feeds sector daily summaries and intraday pressure.</text>
+  <text x="1910" y="1115" class="note">fact_market_day feeds sector regime, sector momentum, stock leaders, and stock persistence.</text>
+  <text x="1910" y="1150" class="note">fact_contagion_event feeds contagion counts and sector spillover summaries.</text>
+  <text x="1910" y="1185" class="note">fact_surveillance_coverage proves monitoring coverage even when no anomaly was emitted.</text>
+  <text x="1910" y="1240" class="note">The warehouse avoids mixed grain: minute, day, event, and coverage records remain separate.</text>
+
+  <!-- Relationship summary block -->
+  <rect x="850" y="1445" width="2190" height="230" rx="18" fill="#ffffff" stroke="#dbe4ee" stroke-width="2"/>
+  <text x="880" y="1485" class="card-title">Surrogate-key relationships and grain</text>
+  <text x="880" y="1530" class="note">dim_stock joins to all facts through stock_sk. dim_date joins to all facts through date_sk. dim_sector joins to anomaly, market-day, and contagion facts through sector_sk.</text>
+  <text x="880" y="1570" class="note">dim_exchange joins to anomaly and market-day facts through exchange_sk. dim_time joins to minute anomaly and surveillance coverage facts through time_sk.</text>
+  <text x="880" y="1610" class="note">Primary grains: fact_anomaly_minute = stock × date × minute; fact_market_day = stock × date; fact_contagion_event = event; fact_surveillance_coverage = stock × date × minute.</text>
+  <text x="880" y="1650" class="note">ETL path: staging.anomaly_metrics_stage → dimension lookup/insert → fact load → materialized view refresh.</text>
+
+  <!-- High level arrows -->
+  <path class="etl" d="M 730 1560 H 845"/>
+  <path class="mvline" d="M 1670 375 H 1845"/>
+  <path class="mvline" d="M 1670 710 H 1845"/>
+  <path class="mvline" d="M 1670 1010 H 1845"/>
+  <path class="mvline" d="M 1670 1288 H 1845"/>
+
+  <!-- Legend -->
+  <rect x="80" y="1715" width="32" height="32" rx="8" fill="#eef6ff" stroke="#4f8fc2" stroke-width="2"/>
+  <text x="125" y="1739" class="legend">Dimension</text>
+  <rect x="300" y="1715" width="32" height="32" rx="8" fill="#fff8ea" stroke="#d49b2c" stroke-width="2"/>
+  <text x="345" y="1739" class="legend">Fact</text>
+  <rect x="470" y="1715" width="32" height="32" rx="8" fill="#f3efff" stroke="#8b77db" stroke-width="2"/>
+  <text x="515" y="1739" class="legend">Materialized view</text>
+  <rect x="760" y="1715" width="32" height="32" rx="8" fill="#ecfdf3" stroke="#43a976" stroke-width="2"/>
+  <text x="805" y="1739" class="legend">Staging</text>
+  <text x="1020" y="1739" class="legend"><tspan class="key">PK</tspan> = primary key, <tspan class="fk">FK</tspan> = foreign key / surrogate key reference</text>
+</svg>
